@@ -17,7 +17,7 @@ The `windows` suffix identifies the fork; every release includes Linux, macOS, a
 Use `@windows` to install the latest commit on the fork's `windows` branch:
 
 ```powershell
-go install github.com/SvetlovA/ralphex/cmd/ralphex.windows@windows
+go install github.com/svtlv/ralphex/cmd/ralphex.windows@windows
 ```
 
 This follows branch commits and may include changes newer than the latest published release. To pin a release, replace `@windows` with its full tag, such as `@v1.7.0-windows.2`.
@@ -34,7 +34,7 @@ The workflows use GitHub's automatic `GITHUB_TOKEN` for these operations:
 
 - creating GitHub releases and uploading Linux, macOS, and Windows artifacts;
 - opening a PR to update `Casks/ralphex.windows.rb` in this repository after each release;
-- publishing the `svtlv/ralphex` and `svetlova/ralphex-go` container packages to GHCR;
+- publishing the `svtlv/ralphex` and `svtlv/ralphex-go` container packages to GHCR;
 - submitting CI coverage data.
 
 Do not create `GORELEASER_GITHUB_TOKEN` or `PKG_TOKEN`; the fork workflows do not consume them.

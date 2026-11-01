@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SvetlovA/ralphex/pkg/execx"
-	"github.com/SvetlovA/ralphex/pkg/input"
-	"github.com/SvetlovA/ralphex/pkg/progress"
+	"github.com/svtlv/ralphex/pkg/execx"
+	"github.com/svtlv/ralphex/pkg/input"
+	"github.com/svtlv/ralphex/pkg/progress"
 )
 
 // datePrefixRe matches date-like prefixes in plan filenames (e.g., "2024-01-15-").

@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/SvetlovA/ralphex/pkg/execx"
+	"github.com/svtlv/ralphex/pkg/execx"
 )
 
 // externalBackend implements the backend interface by shelling out to the git CLI.

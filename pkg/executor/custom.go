@@ -7,7 +7,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/SvetlovA/ralphex/pkg/execx"
+	"github.com/svtlv/ralphex/pkg/execx"
 )
 
 // CustomRunner abstracts command execution for custom review scripts.

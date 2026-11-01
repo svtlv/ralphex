@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/svtlv/ralphex/pkg/status"
 	"github.com/tmaxmax/go-sse"
-	"github.com/SvetlovA/ralphex/pkg/status"
 )
 
 // EventType represents the type of event being streamed.

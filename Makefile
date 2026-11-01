@@ -92,10 +92,10 @@ prep_site:
 	cd site && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/zensical build
 
 docker-build:
-	docker build -t ghcr.io/svetlova/ralphex:latest .
+	docker build -t ghcr.io/svtlv/ralphex:latest .
 
 docker-build-go: docker-build
-	docker build -t ghcr.io/svetlova/ralphex-go:latest -f Dockerfile-go .
+	docker build -t ghcr.io/svtlv/ralphex-go:latest -f Dockerfile-go .
 
 docker-run:
 	./scripts/ralphex-dk.sh $(ARGS)

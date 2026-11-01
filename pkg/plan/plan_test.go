@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/SvetlovA/ralphex/pkg/config"
-	"github.com/SvetlovA/ralphex/pkg/progress"
+	"github.com/svtlv/ralphex/pkg/config"
+	"github.com/svtlv/ralphex/pkg/progress"
 )
 
 func TestNewSelector(t *testing.T) {

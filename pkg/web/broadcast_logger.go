@@ -5,7 +5,7 @@ import (
 	"log"
 	"strings"
 
-	"github.com/SvetlovA/ralphex/pkg/status"
+	"github.com/svtlv/ralphex/pkg/status"
 )
 
 //go:generate moq -out mocks/logger.go -pkg mocks -skip-ensure -fmt goimports . Logger

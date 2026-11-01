@@ -28,7 +28,7 @@ Persist PATH in your shell configuration. Rerun the installer to update; set `RA
 From source on any platform:
 
 ```bash
-go install github.com/SvetlovA/ralphex/cmd/ralphex.windows@windows
+go install github.com/svtlv/ralphex/cmd/ralphex.windows@windows
 ```
 
 Use `@windows` for the latest commit on the `windows` branch, including changes newer than published releases. Go treats `-windows.N` tags as prereleases, so `@latest` prefers the stable upstream tag. To pin a release, use its full tag, such as `@v1.7.0-windows.2`.
@@ -250,8 +250,8 @@ ralphex provides Docker images for isolated execution:
 
 | Image | Contents |
 |-------|----------|
-| `ghcr.io/svetlova/ralphex:latest` | Base: Claude Code, Codex, fya, Node.js, Python, git, docker-cli, make, gcc, bash, fzf, ripgrep |
-| `ghcr.io/svetlova/ralphex-go:latest` | Go development: base + Go 1.26, golangci-lint, moq, goimports |
+| `ghcr.io/svtlv/ralphex:latest` | Base: Claude Code, Codex, fya, Node.js, Python, git, docker-cli, make, gcc, bash, fzf, ripgrep |
+| `ghcr.io/svtlv/ralphex-go:latest` | Go development: base + Go 1.26, golangci-lint, moq, goimports |
 
 **Using Docker wrapper** (requires Python 3.9+):
 ```bash
@@ -260,14 +260,14 @@ curl -sL https://raw.githubusercontent.com/svtlv/ralphex/windows/scripts/ralphex
 chmod +x /usr/local/bin/ralphex
 
 # for non-Go projects, use base image
-export RALPHEX_IMAGE=ghcr.io/svetlova/ralphex:latest
+export RALPHEX_IMAGE=ghcr.io/svtlv/ralphex:latest
 
 # debug docker command without running (shows full command for troubleshooting)
 ralphex --dry-run docs/plans/feature.md
 ```
 
 **Environment variables:**
-- `RALPHEX_IMAGE` - Docker image (default: `ghcr.io/svetlova/ralphex-go:latest`). CLI flag: `--image`
+- `RALPHEX_IMAGE` - Docker image (default: `ghcr.io/svtlv/ralphex-go:latest`). CLI flag: `--image`
 - `RALPHEX_PORT` - Web dashboard port with `--serve` (default: `8080`). CLI flag: `--port`
 - `RALPHEX_CONFIG_DIR` - Custom config directory (default: `~/.config/ralphex`). Overrides global config location for prompts, agents, and settings
 - `CLAUDE_CONFIG_DIR` - Claude config directory (default: `~/.claude`). Use for alternate Claude installations (e.g., `~/.claude2`). Works with both Docker wrapper and non-Docker usage.
@@ -316,7 +316,7 @@ See `docs/bedrock-setup.md` for detailed setup instructions and IAM policies.
 **Creating custom images for other languages:**
 
 ```dockerfile
-FROM ghcr.io/svetlova/ralphex:latest
+FROM ghcr.io/svtlv/ralphex:latest
 
 # Rust
 RUN apk add --no-cache rust cargo

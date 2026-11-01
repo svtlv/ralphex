@@ -19,15 +19,15 @@ import (
 
 	"github.com/jessevdk/go-flags"
 
-	"github.com/SvetlovA/ralphex/pkg/config"
-	"github.com/SvetlovA/ralphex/pkg/git"
-	"github.com/SvetlovA/ralphex/pkg/input"
-	"github.com/SvetlovA/ralphex/pkg/notify"
-	"github.com/SvetlovA/ralphex/pkg/plan"
-	"github.com/SvetlovA/ralphex/pkg/processor"
-	"github.com/SvetlovA/ralphex/pkg/progress"
-	"github.com/SvetlovA/ralphex/pkg/status"
-	"github.com/SvetlovA/ralphex/pkg/web"
+	"github.com/svtlv/ralphex/pkg/config"
+	"github.com/svtlv/ralphex/pkg/git"
+	"github.com/svtlv/ralphex/pkg/input"
+	"github.com/svtlv/ralphex/pkg/notify"
+	"github.com/svtlv/ralphex/pkg/plan"
+	"github.com/svtlv/ralphex/pkg/processor"
+	"github.com/svtlv/ralphex/pkg/progress"
+	"github.com/svtlv/ralphex/pkg/status"
+	"github.com/svtlv/ralphex/pkg/web"
 )
 
 // opts holds all command-line options.

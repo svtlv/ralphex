@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/SvetlovA/ralphex/pkg/progress"
-	"github.com/SvetlovA/ralphex/pkg/status"
+	"github.com/svtlv/ralphex/pkg/progress"
+	"github.com/svtlv/ralphex/pkg/status"
 )
 
 // serverStartupTimeout is the time to wait for server startup before assuming success.

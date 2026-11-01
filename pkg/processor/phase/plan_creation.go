@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/SvetlovA/ralphex/pkg/status"
+	"github.com/svtlv/ralphex/pkg/status"
 )
 
 type draftReviewResult struct {

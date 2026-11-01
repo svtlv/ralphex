@@ -7,7 +7,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/SvetlovA/ralphex/pkg/executor"
+	"github.com/svtlv/ralphex/pkg/executor"
 )
 
 // ExecutorMock is a mock implementation of processor.Executor.

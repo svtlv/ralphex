@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SvetlovA/ralphex/pkg/execx"
-	"github.com/SvetlovA/ralphex/pkg/status"
+	"github.com/svtlv/ralphex/pkg/execx"
+	"github.com/svtlv/ralphex/pkg/status"
 )
 
 //go:generate moq -out mocks/command_runner.go -pkg mocks -skip-ensure -fmt goimports . CommandRunner

@@ -35,7 +35,7 @@ Examples:
   ralphex-dk.sh --update-script
 
 Environment variables:
-  RALPHEX_IMAGE          Docker image (default: ghcr.io/svetlova/ralphex-go:latest)
+  RALPHEX_IMAGE          Docker image (default: ghcr.io/svtlv/ralphex-go:latest)
   RALPHEX_PORT           Web dashboard port with --serve (default: 8080)
   RALPHEX_DOCKER_SOCKET  Enable Docker socket mount ("1", "true", "yes")
   RALPHEX_DOCKER_NETWORK Docker network mode (e.g., "host", "my-network")
@@ -68,7 +68,7 @@ from types import FrameType
 from typing import Optional
 from urllib.request import urlopen
 
-DEFAULT_IMAGE = "ghcr.io/svetlova/ralphex-go:latest"
+DEFAULT_IMAGE = "ghcr.io/svtlv/ralphex-go:latest"
 DEFAULT_PORT = "8080"
 SCRIPT_URL = "https://raw.githubusercontent.com/svtlv/ralphex/windows/scripts/ralphex-dk.sh"
 SENSITIVE_PATTERNS = ["KEY", "SECRET", "TOKEN", "PASSWORD", "PASSWD", "CREDENTIAL", "AUTH"]
@@ -112,7 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
         allow_abbrev=False,
         epilog=textwrap.dedent("""\
             Environment variables:
-              RALPHEX_IMAGE          Docker image (default: ghcr.io/svetlova/ralphex-go:latest)
+              RALPHEX_IMAGE          Docker image (default: ghcr.io/svtlv/ralphex-go:latest)
               RALPHEX_PORT           Web dashboard port with --serve (default: 8080)
               RALPHEX_DOCKER_SOCKET  Enable Docker socket mount ("1", "true", "yes")
               RALPHEX_DOCKER_NETWORK Docker network mode (e.g., "host", "my-network")

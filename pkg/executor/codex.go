@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/SvetlovA/ralphex/pkg/execx"
+	"github.com/svtlv/ralphex/pkg/execx"
 )
 
 // CodexStreams holds both stderr and stdout from codex command.

@@ -381,7 +381,7 @@ Packages include shell completions. To update, download and install the newer pa
 ### From source (all platforms)
 
 ```bash
-go install github.com/SvetlovA/ralphex/cmd/ralphex.windows@windows
+go install github.com/svtlv/ralphex/cmd/ralphex.windows@windows
 ```
 
 Use `@windows` to install the latest commit on this fork's `windows` branch, which may include changes newer than the latest published release. Go treats `-windows.N` tags as prereleases, so `@latest` prefers the stable upstream tag instead.
@@ -487,7 +487,7 @@ Then use `ralphex` as usual - it runs in a container with Claude Code and Codex 
 - Git config in `~/.gitconfig` (for commits)
 
 **Environment variables:**
-- `RALPHEX_IMAGE` - Docker image to use (default: `ghcr.io/svetlova/ralphex-go:latest`). CLI flag: `--image`
+- `RALPHEX_IMAGE` - Docker image to use (default: `ghcr.io/svtlv/ralphex-go:latest`). CLI flag: `--image`
 - `RALPHEX_PORT` - Port for web dashboard when using `--serve` (default: `8080`). CLI flag: `--port`
 - `RALPHEX_CONFIG_DIR` - Custom config directory (default: `~/.config/ralphex`). Overrides global config location for prompts, agents, and settings
 - `CLAUDE_CONFIG_DIR` - Claude config directory (default: `~/.claude`). Use for alternate Claude installations (e.g., `~/.claude2`). Works both with Docker wrapper (volume mounts and keychain derivation) and non-Docker usage (passed through to Claude Code directly). Keychain service name is derived automatically from the path.
@@ -514,7 +514,7 @@ RALPHEX_CLI_UPDATE=1 ralphex docs/plans/feature.md
 Or bake it into a custom image so every run refreshes:
 
 ```dockerfile
-FROM ghcr.io/svetlova/ralphex:latest
+FROM ghcr.io/svtlv/ralphex:latest
 ENV RALPHEX_CLI_UPDATE=1
 ```
 
@@ -619,8 +619,8 @@ Two images are published:
 
 | Image | Description |
 |-------|-------------|
-| `ghcr.io/svetlova/ralphex:latest` | Base image with Claude Code, Codex, and core tools |
-| `ghcr.io/svetlova/ralphex-go:latest` | Go development (extends base with Go toolchain) |
+| `ghcr.io/svtlv/ralphex:latest` | Base image with Claude Code, Codex, and core tools |
+| `ghcr.io/svtlv/ralphex-go:latest` | Go development (extends base with Go toolchain) |
 
 **Base image includes:**
 
@@ -650,13 +650,13 @@ Two images are published:
 
 **For Go projects**, use the `-go` image:
 ```bash
-RALPHEX_IMAGE=ghcr.io/svetlova/ralphex-go:latest ralphex docs/plans/feature.md
+RALPHEX_IMAGE=ghcr.io/svtlv/ralphex-go:latest ralphex docs/plans/feature.md
 ```
 
 **For other languages**, create a custom image by extending the base with your language toolchain. The Go image (`Dockerfile-go`) shows the pattern:
 
 ```dockerfile
-FROM ghcr.io/svetlova/ralphex:latest
+FROM ghcr.io/svtlv/ralphex:latest
 
 # install go from official distribution
 ARG GO_VERSION=1.26.0
@@ -675,7 +675,7 @@ RUN wget -qO- https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/inst
 
 Same approach for Rust, Java, or any other language:
 ```dockerfile
-FROM ghcr.io/svetlova/ralphex:latest
+FROM ghcr.io/svtlv/ralphex:latest
 
 # rust
 RUN apk add --no-cache rust cargo

@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/SvetlovA/ralphex/pkg/config"
-	"github.com/SvetlovA/ralphex/pkg/executor"
-	"github.com/SvetlovA/ralphex/pkg/processor/phase"
-	"github.com/SvetlovA/ralphex/pkg/status"
+	"github.com/svtlv/ralphex/pkg/config"
+	"github.com/svtlv/ralphex/pkg/executor"
+	"github.com/svtlv/ralphex/pkg/processor/phase"
+	"github.com/svtlv/ralphex/pkg/status"
 )
 
 // DefaultIterationDelay is the pause between iterations to allow system to settle.
