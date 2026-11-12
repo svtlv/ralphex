@@ -3,7 +3,7 @@ package processor
 import (
 	"os"
 
-	"github.com/umputun/ralphex/pkg/plan"
+	"github.com/svtlv/ralphex/pkg/plan"
 )
 
 type planLocator struct {

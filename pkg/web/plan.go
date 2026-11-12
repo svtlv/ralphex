@@ -6,7 +6,7 @@ import (
 	"io/fs"
 	"path/filepath"
 
-	"github.com/umputun/ralphex/pkg/plan"
+	"github.com/svtlv/ralphex/pkg/plan"
 )
 
 // loadSessionPlan loads a plan recorded in a session's progress header. relative paths are
