@@ -21,11 +21,28 @@ const DefaultReplayerSize = 10000
 // for first-time connections (no Last-Event-ID header).
 //
 // implementation note: FiniteReplayer assigns monotonically increasing integer IDs
-// as strings starting at "1". by setting LastEventID to "0" when empty, we effectively
-// request replay of all stored events. this depends on FiniteReplayer's internal
-// ID generation scheme - if the library changes this behavior, replay may break.
+// as strings starting at "0" and replays the events after the given ID. setting an
+// empty LastEventID to "0" requests all stored events only because
+// newAllEventsReplayer stores a placeholder that takes ID "0". this depends on
+// FiniteReplayer's internal ID generation scheme - if the library changes it,
+// replay may break.
 type allEventsReplayer struct {
 	inner *sse.FiniteReplayer
+}
+
+// replayOriginTopic carries the placeholder event; no client subscribes to it.
+const replayOriginTopic = "replay-origin"
+
+// newAllEventsReplayer creates a replayer holding count events.
+func newAllEventsReplayer(count int) (*allEventsReplayer, error) {
+	inner, err := sse.NewFiniteReplayer(count, true)
+	if err != nil {
+		return nil, fmt.Errorf("create finite replayer: %w", err)
+	}
+	if _, err := inner.Put(&sse.Message{}, []string{replayOriginTopic}); err != nil {
+		return nil, fmt.Errorf("store replay placeholder: %w", err)
+	}
+	return &allEventsReplayer{inner: inner}, nil
 }
 
 // Put delegates to the inner replayer.
@@ -35,8 +52,7 @@ func (r *allEventsReplayer) Put(message *sse.Message, topics []string) (*sse.Mes
 
 // Replay replays events. If LastEventID is empty, replays from ID "0" (all events).
 func (r *allEventsReplayer) Replay(subscription sse.Subscription) error {
-	// if no LastEventID, replay from the beginning by using ID "0"
-	// (our auto-generated IDs start at 1, so "0" means "replay everything")
+	// "0" is the placeholder's ID (see newAllEventsReplayer), so replaying after it sends every real event
 	if subscription.LastEventID.String() == "" {
 		subscription.LastEventID = sse.ID("0")
 	}
@@ -89,6 +105,12 @@ type Session struct {
 	metadata SessionMetadata // parsed header information
 	state    SessionState    // current state (active/completed)
 	tailer   *Tailer         // file tailer for reading new content (nil if not tailing)
+
+	// liveOutput is true for the in-process session registered by Dashboard.Start.
+	// its events are published directly by the BroadcastLogger, so a tailer must
+	// not run for it: reading the same progress file would publish every line twice.
+	// set once before registration; guarded by mu for readers on watcher goroutines.
+	liveOutput bool
 
 	// lastModified tracks the file's last modification time for change detection
 	lastModified time.Time
@@ -156,17 +178,16 @@ type Session struct {
 // the session starts with an SSE server configured for event replay.
 // metadata should be populated by calling ParseMetadata after creation.
 func NewSession(id, path string) *Session {
-	finiteReplayer, err := sse.NewFiniteReplayer(DefaultReplayerSize, true)
+	allReplayer, err := newAllEventsReplayer(DefaultReplayerSize)
 	if err != nil {
 		// FiniteReplayer only returns error for count < 2, which won't happen
 		log.Printf("[WARN] failed to create replayer: %v", err)
-		finiteReplayer = nil
 	}
 
-	// wrap in allEventsReplayer to replay all events on first connection
+	// replay all events on first connection
 	var replayer sse.Replayer
-	if finiteReplayer != nil {
-		replayer = &allEventsReplayer{inner: finiteReplayer}
+	if allReplayer != nil {
+		replayer = allReplayer
 	}
 
 	sseServer := &sse.Server{
@@ -212,6 +233,35 @@ func (s *Session) GetState() SessionState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.state
+}
+
+// markLiveOutput flags the session as fed by a BroadcastLogger; called before registration.
+func (s *Session) markLiveOutput() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.liveOutput = true
+}
+
+// isLiveOutput reports whether the session's events come from a BroadcastLogger.
+func (s *Session) isLiveOutput() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.liveOutput
+}
+
+// finishLiveOutput hands a finished live session back to the discovery/tailer path.
+// it marks the session loaded under the same lock, because the BroadcastLogger already
+// published the file's lines and the loader would read them in again. lastOffset stays 0:
+// a rerun started in the same second keeps the same Started: header and would otherwise
+// resume mid-stream. tailed sessions are left alone.
+func (s *Session) finishLiveOutput() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.liveOutput {
+		return
+	}
+	s.liveOutput = false
+	s.loaded = true
 }
 
 // GetTailer returns the session's tailer thread-safely.
@@ -293,6 +343,8 @@ func (s *Session) resetForNewRun() {
 	s.lastTask = 0
 	s.loaded = false
 	s.diffStats = nil
+	// no BroadcastLogger feeds a new run on the same file
+	s.liveOutput = false
 }
 
 // tailerStartMode selects how startTailerLocked begins tailing.
@@ -369,6 +421,10 @@ func (s *Session) StartTailing(fromStart bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.liveOutput {
+		return nil // events already stream live through the BroadcastLogger
+	}
+
 	if s.stopping {
 		return nil // StopTailing mid-flight; caller retries on next event
 	}
@@ -406,6 +462,10 @@ func (s *Session) StartTailing(fromStart bool) error {
 func (s *Session) Reactivate() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.liveOutput {
+		return nil // events already stream live through the BroadcastLogger
+	}
 
 	if s.stopping {
 		return nil // StopTailing mid-flight; watcher retries on next Write event

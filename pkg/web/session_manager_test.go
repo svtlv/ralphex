@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -927,6 +928,189 @@ func TestSessionManager_RefreshStates(t *testing.T) {
 		assert.Equal(t, SessionStateCompleted, session.GetState())
 		assert.False(t, session.IsTailing())
 	})
+}
+
+func TestSessionManager_LiveSessionNotTailedAndStateRefreshed(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, wdErr := os.Getwd()
+	require.NoError(t, wdErr)
+	require.NoError(t, os.Chdir(tmpDir))
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+
+	holder := &status.PhaseHolder{}
+	logger, err := progress.NewLogger(progress.Config{PlanFile: "live.md", Mode: "full", NoColor: true}, testColors(), holder)
+	require.NoError(t, err)
+	loggerClosed := false
+	t.Cleanup(func() {
+		if !loggerClosed {
+			_ = logger.Close()
+		}
+	})
+
+	session := NewSession(sessionIDFromPath(logger.Path()), logger.Path())
+	session.markLiveOutput()
+
+	m := NewSessionManager()
+	t.Cleanup(m.Close)
+	m.Register(session)
+
+	_, err = m.Discover(filepath.Dir(logger.Path()))
+	require.NoError(t, err)
+	assert.Equal(t, SessionStateActive, session.GetState())
+	assert.False(t, session.IsTailing())
+
+	require.NoError(t, logger.Close())
+	loggerClosed = true
+	m.RefreshStates()
+	assert.Equal(t, SessionStateCompleted, session.GetState())
+	assert.False(t, session.isLiveOutput(), "a finished run must clear the broadcast mark")
+}
+
+func TestSessionManager_LiveSessionAllowsNextRun(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, wdErr := os.Getwd()
+	require.NoError(t, wdErr)
+	require.NoError(t, os.Chdir(tmpDir))
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+
+	holder := &status.PhaseHolder{}
+	logger, err := progress.NewLogger(progress.Config{PlanFile: "next-run.md", Mode: "full", NoColor: true}, testColors(), holder)
+	require.NoError(t, err)
+	path := logger.Path()
+
+	session := NewSession(sessionIDFromPath(path), path)
+	session.SetState(SessionStateActive)
+	session.markLiveOutput()
+
+	m := NewSessionManager()
+	t.Cleanup(m.Close)
+	m.Register(session)
+
+	_, err = m.Discover(filepath.Dir(path))
+	require.NoError(t, err)
+	require.False(t, session.IsTailing())
+
+	require.NoError(t, logger.Close())
+	m.RefreshStates()
+	require.Equal(t, SessionStateCompleted, session.GetState())
+	require.False(t, session.isLiveOutput())
+
+	logger2, err := progress.NewLogger(progress.Config{PlanFile: "next-run.md", Mode: "full", NoColor: true}, testColors(), holder)
+	require.NoError(t, err)
+	logger2Closed := false
+	t.Cleanup(func() {
+		if !logger2Closed {
+			_ = logger2.Close()
+		}
+	})
+
+	_, err = m.Discover(filepath.Dir(path))
+	require.NoError(t, err)
+	assert.True(t, session.IsTailing(), "a later run must be tailed after the live mark is cleared")
+
+	require.NoError(t, logger2.Close())
+	logger2Closed = true
+}
+
+// regression: a finished live session was replayed from its file on the next discovery of the dir
+func TestSessionManager_LiveSessionDoesNotReplayFinishedFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, wdErr := os.Getwd()
+	require.NoError(t, wdErr)
+	require.NoError(t, os.Chdir(tmpDir))
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+
+	holder := &status.PhaseHolder{}
+	logger, err := progress.NewLogger(progress.Config{PlanFile: "replay.md", Mode: "full", NoColor: true}, testColors(), holder)
+	require.NoError(t, err)
+	path := logger.Path()
+
+	session := NewSession(sessionIDFromPath(path), path)
+	session.SetState(SessionStateActive)
+	session.markLiveOutput()
+
+	m := NewSessionManager()
+	t.Cleanup(m.Close)
+	m.Register(session)
+
+	bl := NewBroadcastLogger(logger, session, holder)
+	bl.Print("unique live line")
+
+	countEvents := func(raw []string) int {
+		var matched int
+		for _, payload := range raw {
+			var e Event
+			require.NoError(t, json.Unmarshal([]byte(payload), &e))
+			if strings.Contains(e.Text, "unique live line") {
+				matched++
+			}
+		}
+		return matched
+	}
+
+	events, cleanup := subscribeSSEEvents(t, session)
+	defer cleanup()
+	require.Equal(t, 1, countEvents(drainChannel(events, 300*time.Millisecond)))
+
+	require.NoError(t, logger.Close())
+	_, err = m.Discover(filepath.Dir(path))
+	require.NoError(t, err)
+	assert.Equal(t, 0, countEvents(drainChannel(events, 300*time.Millisecond)))
+
+	m.RefreshStates()
+	require.Equal(t, SessionStateCompleted, session.GetState())
+	require.True(t, session.IsLoaded())
+	assert.Zero(t, session.getLastOffset(), "an offset at the old size would resume a same-second rerun mid-stream")
+
+	_, err = m.Discover(filepath.Dir(path))
+	require.NoError(t, err)
+	assert.Equal(t, 0, countEvents(drainChannel(events, 300*time.Millisecond)))
+
+	createProgressFile(t, filepath.Join(filepath.Dir(path), "progress-other.txt"), "other.md", "main", "full")
+	_, err = m.Discover(filepath.Dir(path))
+	require.NoError(t, err)
+	assert.Equal(t, 0, countEvents(drainChannel(events, 300*time.Millisecond)))
+}
+
+func TestSessionManager_LiveSessionRestartIsTailed(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, wdErr := os.Getwd()
+	require.NoError(t, wdErr)
+	require.NoError(t, os.Chdir(tmpDir))
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+
+	holder := &status.PhaseHolder{}
+	logger, err := progress.NewLogger(progress.Config{PlanFile: "restart.md", Mode: "full", NoColor: true}, testColors(), holder)
+	require.NoError(t, err)
+	path := logger.Path()
+
+	session := NewSession(sessionIDFromPath(path), path)
+	session.markLiveOutput()
+
+	m := NewSessionManager()
+	t.Cleanup(m.Close)
+	m.Register(session)
+
+	_, err = m.Discover(filepath.Dir(path))
+	require.NoError(t, err)
+	require.False(t, session.IsTailing())
+
+	require.NoError(t, logger.Close())
+	_, err = m.Discover(filepath.Dir(path))
+	require.NoError(t, err)
+	require.Equal(t, SessionStateCompleted, session.GetState())
+
+	meta := session.GetMetadata()
+	meta.StartTime = meta.StartTime.Add(-time.Hour)
+	session.SetMetadata(meta)
+
+	logger2, err := progress.NewLogger(progress.Config{PlanFile: "restart.md", Mode: "full", NoColor: true}, testColors(), holder)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = logger2.Close() })
+
+	_, err = m.Discover(filepath.Dir(path))
+	require.NoError(t, err)
+	assert.True(t, session.IsTailing(), "a restarted run must be tailed after resetForNewRun clears the live mark")
 }
 
 func testColors() *progress.Colors {

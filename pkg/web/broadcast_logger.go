@@ -22,6 +22,16 @@ type Logger interface {
 	Path() string
 }
 
+// DiffStatsWriter is implemented by loggers that persist diff statistics.
+type DiffStatsWriter interface {
+	LogDiffStats(files, additions, deletions int)
+}
+
+// WarnWriter is implemented by loggers that persist warnings.
+type WarnWriter interface {
+	Warn(format string, args ...any)
+}
+
 // BroadcastLogger wraps a Logger and broadcasts events to SSE clients.
 // implements the decorator pattern - all calls are forwarded to the inner logger
 // while also being converted to events for web streaming.
@@ -145,6 +155,25 @@ func (b *BroadcastLogger) LogDraftReview(action, feedback string) {
 	if feedback != "" {
 		b.broadcast(NewOutputEvent(b.holder.Get(), "FEEDBACK: "+feedback))
 	}
+}
+
+// Warn records a warning in the wrapped logger and publishes it as a warn event.
+func (b *BroadcastLogger) Warn(format string, args ...any) {
+	if w, ok := b.inner.(WarnWriter); ok {
+		w.Warn(format, args...)
+	}
+	b.broadcast(NewWarnEvent(b.holder.Get(), "WARN: "+formatText(format, args...)))
+}
+
+// LogDiffStats records completion diff stats in the wrapped logger and the session, and
+// publishes the DIFFSTATS line for the dashboard.
+func (b *BroadcastLogger) LogDiffStats(files, additions, deletions int) {
+	if w, ok := b.inner.(DiffStatsWriter); ok {
+		w.LogDiffStats(files, additions, deletions)
+	}
+	b.session.SetDiffStats(DiffStats{Files: files, Additions: additions, Deletions: deletions})
+	b.broadcast(NewOutputEvent(b.holder.Get(),
+		fmt.Sprintf("DIFFSTATS: files=%d additions=%d deletions=%d", files, additions, deletions)))
 }
 
 // Path returns the progress file path.

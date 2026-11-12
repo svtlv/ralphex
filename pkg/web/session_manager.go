@@ -209,8 +209,9 @@ func (m *SessionManager) updateSession(session *Session) error {
 	// pointing inside an unfinished header. without this gate, a later Reactivate
 	// would resume from mid-header and emit the remaining header lines as output
 	// events. the loader will run on a later updateSession call once the header
-	// separator is visible.
-	if newState == SessionStateCompleted && headerComplete && session.MarkLoadedIfNot() {
+	// separator is visible. live-output sessions are checked before MarkLoadedIfNot so a
+	// running one is not marked loaded; finishLiveOutput marks it once the run ends.
+	if newState == SessionStateCompleted && headerComplete && !session.isLiveOutput() && session.MarkLoadedIfNot() {
 		if session.getLastOffset() == 0 {
 			m.loadProgressFileIntoSession(session.Path, session)
 		}
@@ -387,8 +388,8 @@ func (m *SessionManager) RefreshStates() {
 	m.mu.RUnlock()
 
 	for _, session := range sessions {
-		// only check sessions that are currently tailing
-		if !session.IsTailing() {
+		// live-output sessions never tail but still need the completed transition
+		if !session.IsTailing() && !session.isLiveOutput() {
 			continue
 		}
 
@@ -402,6 +403,7 @@ func (m *SessionManager) RefreshStates() {
 			// session completed, update state and stop tailing
 			session.SetState(SessionStateCompleted)
 			session.StopTailing()
+			session.finishLiveOutput()
 		}
 	}
 }

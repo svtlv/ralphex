@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -299,6 +300,65 @@ func TestDashboard_PrintWatchInfo(t *testing.T) {
 
 	// just verify it doesn't panic
 	d.printWatchInfo([]string{"/tmp", "/var"})
+}
+
+// regression: watcher discovery tailed the live session's own file and published every line twice
+func TestDashboard_Start_MultiSessionDoesNotDuplicateLiveEvents(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldWd, wdErr := os.Getwd()
+	require.NoError(t, wdErr)
+	require.NoError(t, os.Chdir(tmpDir))
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+
+	colors := testColors()
+	holder := &status.PhaseHolder{}
+	baseLog, err := progress.NewLogger(progress.Config{
+		PlanFile: "test.md",
+		Mode:     "full",
+		Branch:   "main",
+		NoColor:  true,
+	}, colors, holder)
+	require.NoError(t, err)
+	defer baseLog.Close()
+
+	cfg := DashboardConfig{
+		BaseLog:   baseLog,
+		Port:      0,
+		PlanFile:  "test.md",
+		Branch:    "main",
+		WatchDirs: []string{tmpDir},
+		Colors:    colors,
+	}
+
+	d := NewDashboard(cfg, holder)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	broadcastLog, err := d.Start(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, broadcastLog)
+
+	sess := broadcastLog.session
+	require.Eventually(t, func() bool {
+		return !sess.GetMetadata().StartTime.IsZero()
+	}, 2*time.Second, 10*time.Millisecond, "watcher should discover the live progress file")
+	assert.Equal(t, SessionStateActive, sess.GetState())
+	assert.False(t, sess.IsTailing(), "live session must not be tailed; file events would duplicate live events")
+
+	events, cleanup := subscribeSSEEvents(t, sess)
+	defer cleanup()
+	_ = drainChannel(events, 200*time.Millisecond)
+
+	broadcastLog.Print("unique live line %d", 7)
+	delivered := drainChannel(events, 500*time.Millisecond)
+
+	var matches int
+	for _, ev := range delivered {
+		if strings.Contains(ev, "unique live line 7") {
+			matches++
+		}
+	}
+	assert.Equal(t, 1, matches, "live line must reach SSE exactly once")
 }
 
 func TestConnectHost(t *testing.T) {

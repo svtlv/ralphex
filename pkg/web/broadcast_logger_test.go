@@ -402,6 +402,54 @@ func TestBroadcastLogger_LogDraftReview_ReviseWithFeedback(t *testing.T) {
 	assert.Equal(t, "Please add more details to Task 3", mockLogger.LogDraftReviewCalls()[0].Feedback)
 }
 
+func TestBroadcastLogger_LogDiffStats(t *testing.T) {
+	session := NewSession("test", "/tmp/test.txt")
+	defer session.Close()
+
+	bl := NewBroadcastLogger(&mocks.LoggerMock{}, session, &status.PhaseHolder{})
+	bl.LogDiffStats(4, 12, 3)
+
+	require.Equal(t, &DiffStats{Files: 4, Additions: 12, Deletions: 3}, session.GetDiffStats())
+
+	events, cleanup := subscribeSSEEvents(t, session)
+	defer cleanup()
+	drained := drainChannel(events, 300*time.Millisecond)
+	require.Len(t, drained, 1)
+	var e Event
+	require.NoError(t, json.Unmarshal([]byte(drained[0]), &e))
+	assert.Equal(t, EventTypeOutput, e.Type)
+	assert.Equal(t, "DIFFSTATS: files=4 additions=12 deletions=3", e.Text)
+}
+
+type warnRecordingLogger struct {
+	mocks.LoggerMock
+	warns []string
+}
+
+func (w *warnRecordingLogger) Warn(format string, args ...any) {
+	w.warns = append(w.warns, fmt.Sprintf(format, args...))
+}
+
+func TestBroadcastLogger_Warn(t *testing.T) {
+	inner := &warnRecordingLogger{}
+	session := NewSession("test", "/tmp/test.txt")
+	defer session.Close()
+
+	bl := NewBroadcastLogger(inner, session, &status.PhaseHolder{})
+	bl.Warn("failed to move plan to completed: %v", "boom")
+
+	require.Equal(t, []string{"failed to move plan to completed: boom"}, inner.warns)
+
+	events, cleanup := subscribeSSEEvents(t, session)
+	defer cleanup()
+	drained := drainChannel(events, 300*time.Millisecond)
+	require.Len(t, drained, 1)
+	var e Event
+	require.NoError(t, json.Unmarshal([]byte(drained[0]), &e))
+	assert.Equal(t, EventTypeWarn, e.Type)
+	assert.Equal(t, "WARN: failed to move plan to completed: boom", e.Text)
+}
+
 func TestExtractTerminalSignal(t *testing.T) {
 	cases := []struct {
 		name   string

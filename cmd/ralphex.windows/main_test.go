@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +21,7 @@ import (
 	flags "github.com/jessevdk/go-flags"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tmaxmax/go-sse"
 
 	"github.com/svtlv/ralphex/pkg/config"
 	"github.com/svtlv/ralphex/pkg/git"
@@ -27,6 +31,7 @@ import (
 	"github.com/svtlv/ralphex/pkg/processor"
 	"github.com/svtlv/ralphex/pkg/progress"
 	"github.com/svtlv/ralphex/pkg/status"
+	"github.com/svtlv/ralphex/pkg/web"
 )
 
 // captureStdout runs fn while redirecting os.Stdout (and the fatih/color Output
@@ -2031,6 +2036,31 @@ func TestArchivePlan(t *testing.T) {
 		assert.Contains(t, string(progressFile), "WARN: failed to move plan to completed")
 	})
 
+	t.Run("rejected_commit_warns_through_broadcast_logger", func(t *testing.T) {
+		req, log := setup(t, "#!/bin/sh\necho 'Invalid commit message format.' >&2\nexit 1\n")
+
+		session := web.NewSession("archive-warn", log.Path())
+		defer session.Close()
+		bl := web.NewBroadcastLogger(log, session, &status.PhaseHolder{})
+
+		moved, err := archivePlan(req, bl)
+		require.Error(t, err)
+		assert.False(t, moved)
+
+		progressFile, readErr := os.ReadFile(log.Path())
+		require.NoError(t, readErr)
+		assert.Contains(t, string(progressFile), "WARN: failed to move plan to completed")
+
+		var warns []web.Event
+		for _, e := range replayedSessionEvents(t, session) {
+			if e.Type == web.EventTypeWarn {
+				warns = append(warns, e)
+			}
+		}
+		require.Len(t, warns, 1)
+		assert.Contains(t, warns[0].Text, "WARN: failed to move plan to completed")
+	})
+
 	t.Run("successful_move_writes_no_warning", func(t *testing.T) {
 		req, log := setup(t, "")
 
@@ -2053,6 +2083,35 @@ func TestArchivePlan(t *testing.T) {
 		assert.False(t, moved)
 		assert.FileExists(t, req.PlanFile)
 	})
+}
+
+func replayedSessionEvents(t *testing.T, session *web.Session) []web.Event {
+	t.Helper()
+	ts := httptest.NewServer(session.SSE)
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL, http.NoBody)
+	require.NoError(t, err)
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	var events []web.Event
+	for ev, readErr := range sse.Read(resp.Body, nil) {
+		if readErr != nil {
+			break
+		}
+		if ev.Data == "" {
+			continue
+		}
+		var e web.Event
+		require.NoError(t, json.Unmarshal([]byte(ev.Data), &e))
+		events = append(events, e)
+	}
+	return events
 }
 
 func TestShouldMovePlan(t *testing.T) {
@@ -3014,7 +3073,7 @@ func TestDisplayStats(t *testing.T) {
 
 		req := executePlanRequest{PlanFile: "docs/plans/feature.md", Colors: colors}
 		stats := git.DiffStats{Files: 5, Additions: 200, Deletions: 50}
-		displayStats(req, baseLog, stats, "2m15s", "feature-branch", false, nil)
+		displayStats(req, baseLog, baseLog, stats, "2m15s", "feature-branch", false, nil)
 	})
 
 	t.Run("without_diff_stats", func(t *testing.T) {
@@ -3029,7 +3088,32 @@ func TestDisplayStats(t *testing.T) {
 		defer func() { _ = baseLog.Close() }()
 
 		req := executePlanRequest{Colors: colors}
-		displayStats(req, baseLog, git.DiffStats{}, "30s", "main", false, nil)
+		displayStats(req, baseLog, baseLog, git.DiffStats{}, "30s", "main", false, nil)
+	})
+
+	t.Run("diff_stats_reach_broadcast_session", func(t *testing.T) {
+		chdirTemp(t)
+
+		colors := testColors()
+		holder := &status.PhaseHolder{}
+		baseLog, err := progress.NewLogger(progress.Config{
+			PlanFile: "broadcast-stats.md", Mode: "full", Branch: "main", NoColor: true,
+		}, colors, holder)
+		require.NoError(t, err)
+		defer func() { _ = baseLog.Close() }()
+
+		session := web.NewSession("broadcast-stats", baseLog.Path())
+		defer session.Close()
+		bl := web.NewBroadcastLogger(baseLog, session, holder)
+
+		req := executePlanRequest{Colors: colors}
+		displayStats(req, baseLog, bl, git.DiffStats{Files: 2, Additions: 3, Deletions: 1}, "1s", "main", false, nil)
+
+		require.Equal(t, &web.DiffStats{Files: 2, Additions: 3, Deletions: 1}, session.GetDiffStats())
+
+		progressFile, readErr := os.ReadFile(baseLog.Path())
+		require.NoError(t, readErr)
+		assert.Contains(t, string(progressFile), "DIFFSTATS: files=2 additions=3 deletions=1")
 	})
 
 	// #450: a worktree archive exists only in the branch, so the path alone names a file that
@@ -3053,7 +3137,7 @@ func TestDisplayStats(t *testing.T) {
 			WtPreserve: &atomic.Bool{},
 		}
 		output := captureStdout(t, func() {
-			displayStats(req, baseLog, git.DiffStats{Files: 1, Additions: 10, Deletions: 5}, "10s", "feature-wt", true, nil)
+			displayStats(req, baseLog, baseLog, git.DiffStats{Files: 1, Additions: 10, Deletions: 5}, "10s", "feature-wt", true, nil)
 		})
 		assert.Contains(t, output,
 			"  plan: "+filepath.Join("docs", "plans", "completed", "feature.md")+" (committed on branch feature-wt)\n")
@@ -3072,7 +3156,7 @@ func TestDisplayStats(t *testing.T) {
 
 		req := executePlanRequest{PlanFile: filepath.Join("docs", "plans", "feature.md"), Colors: colors}
 		output := captureStdout(t, func() {
-			displayStats(req, baseLog, git.DiffStats{}, "10s", "feature", true, nil)
+			displayStats(req, baseLog, baseLog, git.DiffStats{}, "10s", "feature", true, nil)
 		})
 		assert.Contains(t, output, "  plan: "+filepath.Join("docs", "plans", "completed", "feature.md")+"\n")
 		assert.NotContains(t, output, "committed on branch")
@@ -3151,7 +3235,7 @@ func TestDisplayStats(t *testing.T) {
 				req.Colors = colors
 
 				output := captureStdout(t, func() {
-					displayStats(req, baseLog, git.DiffStats{}, "1s", "main", tc.planMoved, tc.planMoveErr)
+					displayStats(req, baseLog, baseLog, git.DiffStats{}, "1s", "main", tc.planMoved, tc.planMoveErr)
 				})
 				assert.Contains(t, output, "  plan: "+tc.wantPath+"\n")
 				if tc.wantNote {
