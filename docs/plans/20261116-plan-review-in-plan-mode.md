@@ -73,14 +73,14 @@ The read-only rule is enforced twice. The prompt tells the reviewer not to edit.
 **Files:**
 - Modify: `cmd/ralphex.windows/main.go`, `cmd/ralphex.windows/main_test.go`, `pkg/processor/runner.go`, `pkg/progress/progress.go`, `pkg/progress/progress_test.go`
 
-- [ ] add `ModePlanReview Mode = "plan-review"` next to the other modes in `runner.go` (dispatch comes in task 7; until then `determineMode` can return it while `Runner.Run` reports "unknown mode" — expected, no test runs that path before task 7)
-- [ ] add `PlanReview bool` with `long:"plan-review"` (existing plan file as the positional argument, optional) and `PlanReviewer string` with `long:"plan-reviewer"` (values ask, external, same, none) to `opts`
-- [ ] `determineMode` returns `ModePlanReview` for `--plan-review`; add `!o.PlanReview` to `isResetOnly`; `tryAutoPlanMode`: no change (that path is unreachable for `--plan-review`)
-- [ ] `validateFlags`: `--plan-review` conflicts with `--plan`, `--review`, `--external-only`, `--codex-only`, `--tasks-only` (clear error each); `--plan-reviewer` must be one of the four values; `--plan-review` with `--plan-reviewer=none` is an error
-- [ ] `applyCLIOverrides`: `--plan-reviewer` overrides `cfg.PlanReviewer`; after the merge, reject standalone `--plan-review` when the effective reviewer is `none` (covers `plan_reviewer = none` in config)
-- [ ] `pkg/progress`: add the `plan-review` case to `modeSuffix` (`-plan-review`); `progressFilename` then gives `progress-<stem>-plan-review.txt` because `PlanFile` is always set in this mode (no no-plan fallback change); update the mode comment in `Config`
-- [ ] write tests: mode selection, every flag conflict, invalid and valid `--plan-reviewer`, none with `--plan-review`, CLI over config precedence, `isResetOnly`, progress filename for the new mode
-- [ ] run `go test ./cmd/... ./pkg/progress/...` - must pass before task 3
+- [x] add `ModePlanReview Mode = "plan-review"` next to the other modes in `runner.go` (dispatch comes in task 7; until then `determineMode` can return it while `Runner.Run` reports "unknown mode" — expected, no test runs that path before task 7)
+- [x] add `PlanReview bool` with `long:"plan-review"` (existing plan file as the positional argument, optional) and `PlanReviewer string` with `long:"plan-reviewer"` (values ask, external, same, none) to `opts`
+- [x] `determineMode` returns `ModePlanReview` for `--plan-review`; add `!o.PlanReview` to `isResetOnly`; `tryAutoPlanMode`: no change (that path is unreachable for `--plan-review`)
+- [x] `validateFlags`: `--plan-review` conflicts with `--plan`, `--review`, `--external-only`, `--codex-only`, `--tasks-only` (clear error each); `--plan-reviewer` must be one of the four values; `--plan-review` with `--plan-reviewer=none` is an error
+- [x] `applyCLIOverrides`: `--plan-reviewer` overrides `cfg.PlanReviewer`; after the merge, reject standalone `--plan-review` when the effective reviewer is `none` (covers `plan_reviewer = none` in config)
+- [x] `pkg/progress`: add the `plan-review` case to `modeSuffix` (`-plan-review`); `progressFilename` then gives `progress-<stem>-plan-review.txt` because `PlanFile` is always set in this mode (no no-plan fallback change); update the mode comment in `Config`
+- [x] write tests: mode selection, every flag conflict, invalid and valid `--plan-reviewer`, none with `--plan-review`, CLI over config precedence, `isResetOnly`, progress filename for the new mode
+- [x] run `go test ./cmd/... ./pkg/progress/...` - must pass before task 3
 
 ### Task 3: Prompt builders and plan Overview helper
 

@@ -166,7 +166,7 @@ type Config struct {
 	PlanFile         string    // plan filename (used to derive progress filename)
 	WorktreePlanFile string    // absolute path of the plan copy the run ticks inside the worktree; empty outside worktree mode
 	PlanDescription  string    // plan description for plan mode (used for filename)
-	Mode             string    // execution mode: full, review, codex-only, plan
+	Mode             string    // execution mode: full, review, codex-only, plan, plan-review
 	Branch           string    // current git branch
 	BranchOverride   string    // explicit branch name override (--branch flag); when set, used as filename stem instead of plan file
 	Params           RunParams // user-set run parameters recorded in the header
@@ -957,6 +957,8 @@ func modeSuffix(mode string) string {
 		return "-codex"
 	case "review":
 		return "-review"
+	case "plan-review":
+		return "-plan-review"
 	default:
 		return ""
 	}

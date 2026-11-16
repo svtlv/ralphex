@@ -57,6 +57,8 @@ type opts struct {
 	Worktree                bool          `long:"worktree" description:"run in isolated git worktree"`
 	Branch                  string        `long:"branch" description:"override branch name for worktree/branch creation (default: derived from plan filename)"`
 	PlanDescription         string        `long:"plan" description:"create plan interactively (enter plan description)"`
+	PlanReview              bool          `long:"plan-review" description:"review an existing plan file before implementation (plan file as argument, optional)"`
+	PlanReviewer            string        `long:"plan-reviewer" description:"preselect plan reviewer: ask, external, same or none (default: ask)"`
 	Debug                   bool          `short:"d" long:"debug" description:"enable debug logging"`
 	NoColor                 bool          `long:"no-color" description:"disable color output"`
 	Version                 bool          `short:"v" long:"version" description:"print version and exit"`
@@ -926,6 +928,8 @@ func determineMode(o opts) processor.Mode {
 	switch {
 	case o.PlanDescription != "":
 		return processor.ModePlan
+	case o.PlanReview:
+		return processor.ModePlanReview
 	case o.TasksOnly:
 		return processor.ModeTasksOnly
 	case o.ExternalOnly || o.CodexOnly:
@@ -1012,6 +1016,9 @@ func validateFlags(o opts) error {
 	if o.PlanDescription != "" && o.PlanFile != "" {
 		return errors.New("--plan flag conflicts with plan file argument; use one or the other")
 	}
+	if err := validatePlanReviewFlags(o); err != nil {
+		return err
+	}
 	if o.Wait < 0 {
 		return fmt.Errorf("--wait must be non-negative, got %s", o.Wait)
 	}
@@ -1024,6 +1031,38 @@ func validateFlags(o opts) error {
 	// --codex / --pass-claude-md / --external-only / --codex-only / --external-review-tool
 	// mutual-exclusion checks are deferred to applyCodexOverrides, which runs after the
 	// config-file merge so that executor=codex coming from config is also enforced.
+	return nil
+}
+
+// validatePlanReviewFlags checks --plan-review and --plan-reviewer for conflicts and invalid values.
+func validatePlanReviewFlags(o opts) error {
+	if o.PlanReview {
+		conflicts := []struct {
+			set  bool
+			flag string
+		}{
+			{o.PlanDescription != "", "--plan"},
+			{o.Review, "--review"},
+			{o.ExternalOnly, "--external-only"},
+			{o.CodexOnly, "--codex-only"},
+			{o.TasksOnly, "--tasks-only"},
+		}
+		for _, c := range conflicts {
+			if c.set {
+				return fmt.Errorf("--plan-review flag conflicts with %s; use one or the other", c.flag)
+			}
+		}
+	}
+	if o.PlanReviewer == "" {
+		return nil
+	}
+	reviewer, err := config.NormalizePlanReviewer(o.PlanReviewer)
+	if err != nil {
+		return fmt.Errorf("--plan-reviewer: %w", err)
+	}
+	if o.PlanReview && reviewer == config.PlanReviewerNone {
+		return errors.New("--plan-review with --plan-reviewer=none has nothing to do; choose ask, external or same")
+	}
 	return nil
 }
 
@@ -1519,6 +1558,7 @@ func isResetOnly(o opts) bool {
 		!o.ExternalOnly &&
 		!o.CodexOnly &&
 		!o.TasksOnly &&
+		!o.PlanReview &&
 		!o.Serve &&
 		o.PlanDescription == "" &&
 		len(o.Watch) == 0 &&
@@ -1613,7 +1653,26 @@ func applyCLIOverrides(o opts, cfg *config.Config) error {
 	if o.customReviewScriptSet {
 		cfg.CustomReviewScript = o.CustomReviewScript
 	}
+	if err := applyPlanReviewerOverride(o, cfg); err != nil {
+		return err
+	}
 	return applyCodexOverrides(o, cfg, os.Stderr)
+}
+
+// applyPlanReviewerOverride applies --plan-reviewer over the config value and rejects
+// standalone --plan-review when the effective reviewer is "none" (flag or config file).
+func applyPlanReviewerOverride(o opts, cfg *config.Config) error {
+	if o.PlanReviewer != "" {
+		reviewer, err := config.NormalizePlanReviewer(o.PlanReviewer)
+		if err != nil {
+			return fmt.Errorf("--plan-reviewer: %w", err)
+		}
+		cfg.PlanReviewer = reviewer
+	}
+	if o.PlanReview && cfg.PlanReviewer == config.PlanReviewerNone {
+		return errors.New("--plan-review requires a plan reviewer, but plan_reviewer is none (config or --plan-reviewer)")
+	}
+	return nil
 }
 
 // applyCodexOverrides applies --codex / --pass-claude-md CLI flags and resolves config-file precedence.

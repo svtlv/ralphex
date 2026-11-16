@@ -20,11 +20,12 @@ const DefaultIterationDelay = 2 * time.Second
 type Mode string
 
 const (
-	ModeFull      Mode = "full"       // full execution: tasks + reviews + codex
-	ModeReview    Mode = "review"     // skip tasks, run full review pipeline
-	ModeCodexOnly Mode = "codex-only" // skip tasks and first review, run only codex loop
-	ModeTasksOnly Mode = "tasks-only" // run only task phase, skip all reviews
-	ModePlan      Mode = "plan"       // interactive plan creation mode
+	ModeFull       Mode = "full"        // full execution: tasks + reviews + codex
+	ModeReview     Mode = "review"      // skip tasks, run full review pipeline
+	ModeCodexOnly  Mode = "codex-only"  // skip tasks and first review, run only codex loop
+	ModeTasksOnly  Mode = "tasks-only"  // run only task phase, skip all reviews
+	ModePlan       Mode = "plan"        // interactive plan creation mode
+	ModePlanReview Mode = "plan-review" // review an existing plan file (standalone --plan-review)
 )
 
 // Config holds runner configuration.

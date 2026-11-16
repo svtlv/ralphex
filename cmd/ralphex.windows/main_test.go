@@ -185,6 +185,8 @@ func TestDetermineMode(t *testing.T) {
 		{name: "plan_takes_precedence_over_codex", opts: opts{PlanDescription: "add caching", CodexOnly: true}, expected: processor.ModePlan},
 		{name: "plan_takes_precedence_over_external", opts: opts{PlanDescription: "add caching", ExternalOnly: true}, expected: processor.ModePlan},
 		{name: "plan_takes_precedence_over_tasks_only", opts: opts{PlanDescription: "add caching", TasksOnly: true}, expected: processor.ModePlan},
+		{name: "plan_review_flag", opts: opts{PlanReview: true}, expected: processor.ModePlanReview},
+		{name: "plan_review_with_plan_file", opts: opts{PlanReview: true, PlanFile: "docs/plans/x.md"}, expected: processor.ModePlanReview},
 	}
 
 	for _, tc := range tests {
@@ -1010,6 +1012,21 @@ func TestValidateFlags(t *testing.T) {
 		{name: "codex_with_external_only_accepted_at_cli_stage", opts: opts{Codex: true, ExternalOnly: true}, wantErr: false},
 		{name: "codex_with_codex_only_accepted_at_cli_stage", opts: opts{Codex: true, CodexOnly: true}, wantErr: false},
 		{name: "pass_claude_md_without_codex_is_valid_at_cli_stage", opts: opts{PassClaudeMd: true}, wantErr: false},
+		{name: "plan_review_alone_is_valid", opts: opts{PlanReview: true}, wantErr: false},
+		{name: "plan_review_with_plan_file_is_valid", opts: opts{PlanReview: true, PlanFile: "docs/plans/x.md"}, wantErr: false},
+		{name: "plan_review_conflicts_with_plan", opts: opts{PlanReview: true, PlanDescription: "x"}, wantErr: true, errMsg: "--plan-review flag conflicts with --plan"},
+		{name: "plan_review_conflicts_with_review", opts: opts{PlanReview: true, Review: true}, wantErr: true, errMsg: "conflicts with --review"},
+		{name: "plan_review_conflicts_with_external_only", opts: opts{PlanReview: true, ExternalOnly: true}, wantErr: true, errMsg: "conflicts with --external-only"},
+		{name: "plan_review_conflicts_with_codex_only", opts: opts{PlanReview: true, CodexOnly: true}, wantErr: true, errMsg: "conflicts with --codex-only"},
+		{name: "plan_review_conflicts_with_tasks_only", opts: opts{PlanReview: true, TasksOnly: true}, wantErr: true, errMsg: "conflicts with --tasks-only"},
+		{name: "plan_reviewer_ask_is_valid", opts: opts{PlanReviewer: "ask"}, wantErr: false},
+		{name: "plan_reviewer_external_is_valid", opts: opts{PlanReviewer: "external"}, wantErr: false},
+		{name: "plan_reviewer_same_is_valid", opts: opts{PlanReviewer: "same"}, wantErr: false},
+		{name: "plan_reviewer_none_is_valid_for_plan_mode", opts: opts{PlanReviewer: "none", PlanDescription: "x"}, wantErr: false},
+		{name: "plan_reviewer_is_case_insensitive", opts: opts{PlanReviewer: "External"}, wantErr: false},
+		{name: "plan_reviewer_invalid", opts: opts{PlanReviewer: "bogus"}, wantErr: true, errMsg: "--plan-reviewer"},
+		{name: "plan_review_with_reviewer_none", opts: opts{PlanReview: true, PlanReviewer: "none"}, wantErr: true, errMsg: "--plan-reviewer=none"},
+		{name: "plan_review_with_reviewer_same", opts: opts{PlanReview: true, PlanReviewer: "same"}, wantErr: false},
 	}
 
 	for _, tc := range tests {
@@ -2598,6 +2615,10 @@ func TestIsResetOnly(t *testing.T) {
 	t.Run("reset_with_init", func(t *testing.T) {
 		assert.False(t, isResetOnly(opts{Reset: true, Init: true}))
 	})
+
+	t.Run("reset_with_plan_review", func(t *testing.T) {
+		assert.False(t, isResetOnly(opts{Reset: true, PlanReview: true}))
+	})
 }
 
 func TestResolveVersion(t *testing.T) {
@@ -3591,5 +3612,69 @@ func TestArchivePlanWorktree(t *testing.T) {
 
 		cleanupWorktree(run.mainGitSvc, run.mainDir, run.wtPath, run.preserve)
 		assert.DirExists(t, run.wtPath)
+	})
+}
+
+func TestPlanReviewFlags(t *testing.T) {
+	t.Run("flags parse", func(t *testing.T) {
+		o := parseTestOpts(t, "--plan-review", "--plan-reviewer=same", "docs/plans/x.md")
+		assert.True(t, o.PlanReview)
+		assert.Equal(t, "same", o.PlanReviewer)
+		assert.Equal(t, "docs/plans/x.md", o.PlanFile)
+		assert.Equal(t, processor.ModePlanReview, determineMode(o))
+	})
+
+	t.Run("cli overrides config", func(t *testing.T) {
+		cfg := &config.Config{PlanReviewer: config.PlanReviewerAsk}
+		o := parseTestOpts(t, "--plan-reviewer=External")
+
+		require.NoError(t, applyCLIOverrides(o, cfg))
+
+		assert.Equal(t, config.PlanReviewerExternal, cfg.PlanReviewer)
+	})
+
+	t.Run("config kept when flag absent", func(t *testing.T) {
+		cfg := &config.Config{PlanReviewer: config.PlanReviewerSame}
+		o := parseTestOpts(t)
+
+		require.NoError(t, applyCLIOverrides(o, cfg))
+
+		assert.Equal(t, config.PlanReviewerSame, cfg.PlanReviewer)
+	})
+
+	t.Run("invalid cli value is an error", func(t *testing.T) {
+		cfg := &config.Config{}
+		o := parseTestOpts(t, "--plan-reviewer=bogus")
+
+		err := applyCLIOverrides(o, cfg)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--plan-reviewer")
+	})
+
+	t.Run("plan-review with config none is rejected", func(t *testing.T) {
+		cfg := &config.Config{PlanReviewer: config.PlanReviewerNone}
+		o := parseTestOpts(t, "--plan-review")
+
+		err := applyCLIOverrides(o, cfg)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "plan_reviewer is none")
+	})
+
+	t.Run("plan-review with cli reviewer overrides config none", func(t *testing.T) {
+		cfg := &config.Config{PlanReviewer: config.PlanReviewerNone}
+		o := parseTestOpts(t, "--plan-review", "--plan-reviewer=same")
+
+		require.NoError(t, applyCLIOverrides(o, cfg))
+
+		assert.Equal(t, config.PlanReviewerSame, cfg.PlanReviewer)
+	})
+
+	t.Run("config none is fine outside plan-review", func(t *testing.T) {
+		cfg := &config.Config{PlanReviewer: config.PlanReviewerNone}
+		o := parseTestOpts(t, "--plan", "add x")
+
+		require.NoError(t, applyCLIOverrides(o, cfg))
 	})
 }

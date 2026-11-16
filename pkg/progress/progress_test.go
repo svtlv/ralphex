@@ -1379,6 +1379,8 @@ func TestGetProgressFilename(t *testing.T) {
 		{"full mode with plan", "docs/plans/feature.md", "", "full", "", filepath.Join(progressDir, "progress-feature.txt")},
 		{"review mode with plan", "docs/plans/feature.md", "", "review", "", filepath.Join(progressDir, "progress-feature-review.txt")},
 		{"codex-only mode with plan", "docs/plans/feature.md", "", "codex-only", "", filepath.Join(progressDir, "progress-feature-codex.txt")},
+		{"plan-review mode with plan", "docs/plans/feature.md", "", "plan-review", "", filepath.Join(progressDir, "progress-feature-plan-review.txt")},
+		{"plan-review mode with branch override", "docs/plans/tasks.md", "", "plan-review", "my-feature", filepath.Join(progressDir, "progress-my-feature-plan-review.txt")},
 		{"full mode no plan", "", "", "full", "", filepath.Join(progressDir, "progress.txt")},
 		{"review mode no plan", "", "", "review", "", filepath.Join(progressDir, "progress-review.txt")},
 		{"codex-only mode no plan", "", "", "codex-only", "", filepath.Join(progressDir, "progress-codex.txt")},
