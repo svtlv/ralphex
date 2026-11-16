@@ -9,6 +9,7 @@ import (
 
 	"github.com/svtlv/ralphex/pkg/config"
 	"github.com/svtlv/ralphex/pkg/executor"
+	"github.com/svtlv/ralphex/pkg/plan"
 	"github.com/svtlv/ralphex/pkg/processor/phase"
 	"github.com/svtlv/ralphex/pkg/status"
 )
@@ -150,6 +151,10 @@ type planCreationPhaseRunner interface {
 	Run(ctx context.Context) error
 }
 
+type planReviewPhaseRunner interface {
+	Run(ctx context.Context, req phase.PlanReviewRequest) error
+}
+
 type runnerPhases struct {
 	task          taskPhaseRunner
 	taskValidator taskPlanValidator
@@ -157,6 +162,7 @@ type runnerPhases struct {
 	external      externalReviewPhaseRunner
 	finalize      finalizePhaseRunner
 	planCreation  planCreationPhaseRunner
+	planReview    planReviewPhaseRunner
 }
 
 // New creates a new Runner with the given configuration and shared phase holder.
@@ -226,9 +232,14 @@ func NewWithExecutors(cfg Config, log Logger, execs Executors, holder *status.Ph
 		Cfg: phaseCfg, Log: log, Exec: execs.Task, Policy: policy, Prompts: prompts,
 		Deps: deps, PhaseHolder: holder, IterationDelay: iterDelay,
 	})
+	planReviewPhase := phase.NewPlanReviewPhase(phase.PlanReviewPhaseOpts{
+		Cfg: phaseCfg, Log: log, Planner: execs.Task, External: execs.External, Custom: execs.Custom,
+		Policy: policy, Prompts: prompts, Deps: deps, PhaseHolder: holder,
+	})
 	phases := runnerPhases{
 		task: taskPhase, taskValidator: taskPhase, review: reviewPhase,
 		external: externalPhase, finalize: finalizePhase, planCreation: planCreationPhase,
+		planReview: planReviewPhase,
 	}
 
 	return &Runner{
@@ -303,16 +314,58 @@ func (r *Runner) Run(ctx context.Context) error {
 	case ModeTasksOnly:
 		return r.runTasksOnly(ctx)
 	case ModePlan:
-		if err := r.phases.planCreation.Run(ctx); err != nil {
-			if errors.Is(err, ErrUserRejectedPlan) {
-				return ErrUserRejectedPlan
-			}
-			return fmt.Errorf("plan creation phase: %w", err)
-		}
-		return nil
+		return r.runPlan(ctx)
+	case ModePlanReview:
+		return r.runPlanReview(ctx)
 	default:
 		return fmt.Errorf("unknown mode: %s", r.cfg.Mode)
 	}
+}
+
+// runPlan creates a plan interactively, then offers the plan review on the file the planner wrote.
+func (r *Runner) runPlan(ctx context.Context) error {
+	startTime := time.Now()
+	if err := r.phases.planCreation.Run(ctx); err != nil {
+		if errors.Is(err, ErrUserRejectedPlan) {
+			return ErrUserRejectedPlan
+		}
+		return fmt.Errorf("plan creation phase: %w", err)
+	}
+
+	// the planner writes the plan file itself, so find it the same way the caller does
+	if r.deps == nil || r.deps.PlanFinder == nil {
+		r.log.Print("plan file finder not configured, skipping plan review")
+		return nil
+	}
+	planFile := r.deps.PlanFinder.FindRecent(startTime)
+	if planFile == "" {
+		r.log.Print("plan file not found, skipping plan review")
+		return nil
+	}
+
+	req := phase.PlanReviewRequest{PlanFile: planFile, Description: r.cfg.PlanDescription}
+	if err := r.phases.planReview.Run(ctx, req); err != nil {
+		return fmt.Errorf("plan review phase: %w", err)
+	}
+	return nil
+}
+
+// runPlanReview reviews an existing plan file without planner questions or drafts.
+func (r *Runner) runPlanReview(ctx context.Context) error {
+	if r.cfg.PlanFile == "" {
+		return errors.New("plan file required for plan-review mode")
+	}
+	description, err := plan.ExtractOverview(r.cfg.PlanFile)
+	if err != nil {
+		return fmt.Errorf("read plan overview: %w", err)
+	}
+
+	r.phaseHolder.Set(status.PhasePlan)
+	req := phase.PlanReviewRequest{PlanFile: r.cfg.PlanFile, Description: description}
+	if err := r.phases.planReview.Run(ctx, req); err != nil {
+		return fmt.Errorf("plan review phase: %w", err)
+	}
+	return nil
 }
 
 // runFull executes the complete pipeline: tasks → review → codex → review.

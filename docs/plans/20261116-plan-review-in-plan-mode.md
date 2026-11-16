@@ -148,11 +148,11 @@ The read-only rule is enforced twice. The prompt tells the reviewer not to edit.
 - Modify: `pkg/processor/runner.go`
 - Modify tests: `pkg/processor/runner_test.go`
 
-- [ ] build the review phase in the runner phase set (late-bound deps preserved through `phase.Deps`)
-- [ ] `ModePlan`: record the start time, run plan creation, then find the plan with the finder and run the review phase with `cfg.PlanDescription`; if no plan file is found, log it and finish; keep `ErrUserRejectedPlan` handling
-- [ ] `ModePlanReview`: require `cfg.PlanFile`, take the description from `plan.ExtractOverview`, set the plan phase on the phase holder, run only the review phase; no planner questions or drafts
-- [ ] write runner tests: ModePlan runs the review after PLAN_READY and not after rejection; ModePlanReview runs the same phase and never calls plan creation; missing plan file error; the same loop code is hit from both modes
-- [ ] run `go test ./pkg/processor/...` - must pass before task 8
+- [x] build the review phase in the runner phase set (late-bound deps preserved through `phase.Deps`)
+- [x] `ModePlan`: record the start time, run plan creation, then find the plan with the finder and run the review phase with `cfg.PlanDescription`; if no plan file is found, log it and finish; keep `ErrUserRejectedPlan` handling
+- [x] `ModePlanReview`: require `cfg.PlanFile`, take the description from `plan.ExtractOverview`, set the plan phase on the phase holder, run only the review phase; no planner questions or drafts
+- [x] write runner tests: ModePlan runs the review after PLAN_READY and not after rejection; ModePlanReview runs the same phase and never calls plan creation; missing plan file error; the same loop code is hit from both modes
+- [x] run `go test ./pkg/processor/...` - must pass before task 8
 
 ### Task 8: main.go wiring for plan and plan-review modes
 
