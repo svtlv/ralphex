@@ -2691,3 +2691,85 @@ func TestValues_mergeFrom_ReviewModel(t *testing.T) {
 		assert.Equal(t, "haiku", values.ReviewModel)
 	})
 }
+
+func TestValuesLoader_Load_PlanReviewer(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   string
+		expected string
+		wantErr  string
+	}{
+		{name: "ask", config: "plan_reviewer = ask", expected: "ask"},
+		{name: "external", config: "plan_reviewer = external", expected: "external"},
+		{name: "same", config: "plan_reviewer = same", expected: "same"},
+		{name: "none", config: "plan_reviewer = none", expected: "none"},
+		{name: "case insensitive", config: "plan_reviewer = External", expected: "external"},
+		{name: "empty means ask", config: "plan_reviewer =", expected: "ask"},
+		{name: "invalid", config: "plan_reviewer = both", wantErr: "invalid plan_reviewer"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "config")
+			require.NoError(t, os.WriteFile(configPath, []byte(tc.config), 0o600))
+
+			values, err := newValuesLoader(defaultsFS).Load("", configPath)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.expected, values.PlanReviewer)
+		})
+	}
+}
+
+func TestValuesLoader_Load_PlanReviewerDefault(t *testing.T) {
+	values, err := newValuesLoader(defaultsFS).Load("", filepath.Join(t.TempDir(), "missing"))
+	require.NoError(t, err)
+	assert.Equal(t, "ask", values.PlanReviewer)
+}
+
+func TestValuesLoader_Load_LocalOverridesPlanReviewer(t *testing.T) {
+	tmpDir := t.TempDir()
+	globalPath := filepath.Join(tmpDir, "global")
+	localPath := filepath.Join(tmpDir, "local")
+	require.NoError(t, os.WriteFile(globalPath, []byte("plan_reviewer = same"), 0o600))
+	require.NoError(t, os.WriteFile(localPath, []byte("plan_reviewer = external"), 0o600))
+
+	values, err := newValuesLoader(defaultsFS).Load(localPath, globalPath)
+	require.NoError(t, err)
+	assert.Equal(t, "external", values.PlanReviewer)
+
+	// global wins when local does not set it
+	require.NoError(t, os.WriteFile(localPath, []byte("max_iterations = 7"), 0o600))
+	values, err = newValuesLoader(defaultsFS).Load(localPath, globalPath)
+	require.NoError(t, err)
+	assert.Equal(t, "same", values.PlanReviewer)
+}
+
+func TestValues_mergeFrom_PlanReviewer(t *testing.T) {
+	dst := Values{PlanReviewer: "ask", PlanReviewerSet: true}
+	src := Values{}
+	dst.mergeFrom(&src)
+	assert.Equal(t, "ask", dst.PlanReviewer, "unset source keeps destination")
+
+	src = Values{PlanReviewer: "none", PlanReviewerSet: true}
+	dst.mergeFrom(&src)
+	assert.Equal(t, "none", dst.PlanReviewer)
+}
+
+func TestNormalizePlanReviewer(t *testing.T) {
+	for _, in := range []string{"", "  ", "ask", "ASK"} {
+		got, err := NormalizePlanReviewer(in)
+		require.NoError(t, err)
+		assert.Equal(t, "ask", got)
+	}
+	got, err := NormalizePlanReviewer(" Same ")
+	require.NoError(t, err)
+	assert.Equal(t, "same", got)
+
+	_, err = NormalizePlanReviewer("bogus")
+	require.Error(t, err)
+}

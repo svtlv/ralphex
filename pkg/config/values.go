@@ -45,6 +45,8 @@ type Values struct {
 	ExternalReviewTool         string        // "codex", "custom", or "none"
 	ExternalReviewToolSet      bool          // tracks if external_review_tool was explicitly set in user config (not embedded default)
 	CustomReviewScript         string        // path to custom review script (when ExternalReviewTool = "custom")
+	PlanReviewer               string        // plan review preselection: "ask", "external", "same" or "none"
+	PlanReviewerSet            bool          // tracks if plan_reviewer was explicitly set
 	IterationDelayMs           int
 	IterationDelayMsSet        bool // tracks if iteration_delay_ms was explicitly set
 	TaskRetryCount             int
@@ -256,6 +258,16 @@ func (vl *valuesLoader) parseValuesFromBytes(data []byte) (Values, error) {
 	}
 	if key, err := section.GetKey("custom_review_script"); err == nil {
 		values.CustomReviewScript = expandTilde(key.String())
+	}
+
+	// plan review: reviewer preselection for plan mode
+	if key, err := section.GetKey("plan_reviewer"); err == nil {
+		v, valErr := NormalizePlanReviewer(key.String())
+		if valErr != nil {
+			return Values{}, valErr
+		}
+		values.PlanReviewer = v
+		values.PlanReviewerSet = true
 	}
 
 	// timing settings
@@ -510,6 +522,7 @@ func (dst *Values) mergeFrom(src *Values) {
 	}
 	dst.mergeExecutionFrom(src)
 	dst.mergeExtraFrom(src)
+	dst.mergePlanReviewFrom(src)
 	dst.mergeNotifyFrom(src)
 }
 
@@ -812,4 +825,12 @@ func expandTilde(path string) string {
 		return path
 	}
 	return home + path[1:] // replace ~ with home, keep the /
+}
+
+// mergePlanReviewFrom merges plan review settings from src into dst.
+func (dst *Values) mergePlanReviewFrom(src *Values) {
+	if src.PlanReviewerSet {
+		dst.PlanReviewer = src.PlanReviewer
+		dst.PlanReviewerSet = true
+	}
 }

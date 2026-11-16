@@ -35,6 +35,7 @@ func Test_defaultsFS_PromptFiles(t *testing.T) {
 		{file: "defaults/prompts/review_second.txt", contains: []string{"{{GOAL}}", "{{PROGRESS_FILE}}", "RALPHEX:REVIEW_DONE", "{{agent:quality}}", "{{agent:implementation}}"}},
 		{file: "defaults/prompts/codex.txt", contains: []string{"{{CODEX_OUTPUT}}", "RALPHEX:CODEX_REVIEW_DONE", "Codex reviewed"}},
 		{file: "defaults/prompts/codex_review.txt", contains: []string{"{{DIFF_INSTRUCTION}}", "{{PROGRESS_FILE}}", "{{PREVIOUS_REVIEW_CONTEXT}}", "{{PLAN_FILE}}"}},
+		{file: "defaults/prompts/plan_review.txt", contains: []string{"{{PLAN_FILE}}", "{{PLAN_DESCRIPTION}}", "{{PROGRESS_FILE}}", "{{DEFAULT_BRANCH}}", "NO ISSUES FOUND", "CRITICAL: <section> - <text>", "read-only", "### Task N:"}},
 	}
 
 	for _, tc := range testCases {
@@ -59,6 +60,7 @@ func Test_defaultsFS_AllFilesPresent(t *testing.T) {
 		"defaults/prompts/review_second.txt",
 		"defaults/prompts/codex.txt",
 		"defaults/prompts/codex_review.txt",
+		"defaults/prompts/plan_review.txt",
 	}
 
 	for _, file := range expectedFiles {
@@ -140,6 +142,7 @@ func TestLoad_PopulatesAllFields(t *testing.T) {
 	assert.NotEmpty(t, cfg.ReviewSecondPrompt)
 	assert.NotEmpty(t, cfg.CodexPrompt)
 	assert.NotEmpty(t, cfg.CodexReviewPrompt)
+	assert.NotEmpty(t, cfg.PlanReviewPrompt)
 }
 
 func TestLoad_WithUserConfig(t *testing.T) {
@@ -1521,7 +1524,7 @@ func TestConfig_JSONShape(t *testing.T) {
 	wantKeys := []string{
 		"claude_command", "claude_args", "plan_model", "task_model", "review_model",
 		"codex_enabled", "codex_command", "codex_model", "codex_reasoning_effort",
-		"codex_timeout_ms", "codex_sandbox", "external_review_tool", "custom_review_script",
+		"codex_timeout_ms", "codex_sandbox", "external_review_tool", "custom_review_script", "plan_reviewer",
 		"iteration_delay_ms", "task_retry_count", "max_iterations", "max_external_iterations",
 		"review_patience", "finalize_enabled", "preserve_anthropic_api_key", "executor",
 		"pass_claude_md", "move_plan_on_completion", "worktree_enabled", "plans_dir",
@@ -1547,4 +1550,28 @@ func TestConfig_JSONShape(t *testing.T) {
 		_, present := got[absent]
 		assert.False(t, present, "unexpected json key %q present", absent)
 	}
+}
+
+func TestLoad_PlanReviewer(t *testing.T) {
+	t.Run("default is ask", func(t *testing.T) {
+		cfg, err := Load(t.TempDir())
+		require.NoError(t, err)
+		assert.Equal(t, "ask", cfg.PlanReviewer)
+	})
+
+	t.Run("global config value", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config"), []byte("plan_reviewer = same"), 0o600))
+		cfg, err := Load(dir)
+		require.NoError(t, err)
+		assert.Equal(t, "same", cfg.PlanReviewer)
+	})
+
+	t.Run("invalid value is an error", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config"), []byte("plan_reviewer = nope"), 0o600))
+		_, err := Load(dir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid plan_reviewer")
+	})
 }
