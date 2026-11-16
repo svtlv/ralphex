@@ -339,6 +339,21 @@ func run(ctx context.Context, o opts) error {
 		}, selector)
 	}
 
+	// plan-review mode reviews an existing plan without a branch or worktree
+	if mode == processor.ModePlanReview {
+		return runPlanReviewMode(ctx, o, executePlanRequest{
+			Mode:           processor.ModePlanReview,
+			GitSvc:         gitSvc,
+			Config:         cfg,
+			Colors:         colors,
+			DefaultBranch:  defaultBranch,
+			BaseRef:        baseRef,
+			NotifySvc:      notifySvc,
+			WtCleanup:      wtCleanup,
+			BranchOverride: o.Branch,
+		}, selector)
+	}
+
 	return selectAndExecutePlan(ctx, o, executePlanRequest{
 		Mode:           mode,
 		GitSvc:         gitSvc,
@@ -1124,6 +1139,17 @@ func printStartupInfo(info startupInfo, colors *progress.Colors) {
 		return
 	}
 
+	if info.Mode == processor.ModePlanReview {
+		colors.Info().Printf("starting plan review (max %d iterations)\n", info.MaxIterations)
+		displayMeta(colors, 0, info.PlanFile, "", info.Branch, info.ProgressPath)
+		printExecutorInfo(info, colors)
+		if info.PreserveAnthropicAPIKey {
+			colors.Warn().Printf("auth: ANTHROPIC_API_KEY passthrough enabled\n")
+		}
+		colors.Info().Printf("\n")
+		return
+	}
+
 	modeStr := ""
 	if info.Mode != processor.ModeFull {
 		modeStr = fmt.Sprintf(" (%s mode)", info.Mode)
@@ -1208,7 +1234,7 @@ func runHeaderParams(o opts, cfg *config.Config, mode processor.Mode) progress.R
 	if cfg.Executor == config.ExecutorCodex {
 		p.Executor = config.ExecutorCodex
 	}
-	if mode == processor.ModePlan {
+	if mode == processor.ModePlan || mode == processor.ModePlanReview {
 		p.PlanModel = resolvePlanSpec(o, cfg)
 		return p
 	}
@@ -1338,19 +1364,12 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	// record start time for finding the created plan
 	startTime := time.Now()
 
-	r := processor.New(processor.Config{
-		PlanDescription:  o.PlanDescription,
-		ProgressPath:     baseLog.Path(),
-		Mode:             processor.ModePlan,
-		MaxIterations:    maxIter,
-		Debug:            o.Debug,
-		NoColor:          o.NoColor,
-		IterationDelayMs: req.Config.IterationDelayMs,
-		DefaultBranch:    req.BaseRef,
-		TaskModel:        resolvePlanSpec(o, req.Config),
-		AppConfig:        req.Config,
-	}, baseLog, holder)
-	r.SetInputCollector(collector)
+	r := newPlanRunner(o, req, processor.Config{
+		PlanDescription: o.PlanDescription,
+		ProgressPath:    baseLog.Path(),
+		Mode:            processor.ModePlan,
+		MaxIterations:   maxIter,
+	}, baseLog, holder, collector, selector)
 
 	// run the plan creation loop
 	if runErr := r.Run(ctx); runErr != nil {
@@ -1376,12 +1395,56 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	}
 
 	// ask user if they want to continue with plan implementation
-	if !input.AskYesNo(ctx, "Continue with plan implementation?", os.Stdin, os.Stdout) {
+	if !confirmContinue(ctx) {
 		return nil
 	}
 
+	return runImplementation(ctx, o, req, planFile)
+}
+
+// confirmContinue asks whether to continue with plan implementation. it is a variable so tests can
+// answer without a terminal.
+var confirmContinue = func(ctx context.Context) bool {
+	return input.AskYesNo(ctx, "Continue with plan implementation?", os.Stdin, os.Stdout)
+}
+
+// newPlanRunner builds the runner shared by plan creation and plan-review modes. base carries the
+// mode-specific fields; the common settings are filled in here. CodexEnabled and ExternalReviewToolSet
+// must be set so the plan review offers the External reviewer (ExternalReviewPhase.Tool() returns
+// none when codex is disabled). the plan finder and repo state back plan review and its read-only guard.
+func newPlanRunner(o opts, req executePlanRequest, base processor.Config, log processor.Logger,
+	holder *status.PhaseHolder, collector processor.InputCollector, selector *plan.Selector) *processor.Runner {
+	r := processor.New(planProcessorConfig(o, req, base), log, holder)
+	r.SetInputCollector(collector)
+	r.SetPlanFinder(selector)
+	if req.GitSvc != nil {
+		r.SetRepoState(req.GitSvc)
+	}
+	return r
+}
+
+// planProcessorConfig fills the processor settings that plan creation and plan-review modes share.
+func planProcessorConfig(o opts, req executePlanRequest, base processor.Config) processor.Config {
+	base.Debug = o.Debug
+	base.NoColor = o.NoColor
+	base.IterationDelayMs = req.Config.IterationDelayMs
+	base.CodexEnabled = req.Config.CodexEnabled
+	base.ExternalReviewToolSet = o.externalReviewToolSet
+	base.DefaultBranch = req.BaseRef
+	base.TaskModel = resolvePlanSpec(o, req.Config)
+	base.AppConfig = req.Config
+	return base
+}
+
+// runImplementation continues with plan implementation after a plan mode. it is a variable so
+// tests can observe the call without running a full execution.
+var runImplementation = continueWithImplementation
+
+// continueWithImplementation runs full plan execution on a plan created or reviewed by a plan mode.
+// it resolves the plan path to absolute before any chdir, then creates a worktree or branch and executes.
+func continueWithImplementation(ctx context.Context, o opts, req executePlanRequest, planFile string) error {
 	// resolve plan file to absolute path before potential chdir
-	planFile, err = filepath.Abs(planFile)
+	planFile, err := filepath.Abs(planFile)
 	if err != nil {
 		return fmt.Errorf("resolve plan file: %w", err)
 	}
@@ -1420,6 +1483,95 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 		BaseRef:       req.BaseRef,
 		NotifySvc:     req.NotifySvc,
 	})
+}
+
+// runPlanReviewMode reviews an existing plan file (--plan-review). it asks no planner questions,
+// makes no drafts and creates no branch or worktree. after the review loop it asks whether to
+// continue with plan implementation, the same as plan mode.
+func runPlanReviewMode(ctx context.Context, o opts, req executePlanRequest, selector *plan.Selector) error {
+	// ignore .ralphex/ before the progress file is created, as plan mode does
+	if err := req.GitSvc.EnsureLocalGitignore(); err != nil {
+		return fmt.Errorf("ensure gitignore: %w", err)
+	}
+
+	// no auto-plan-mode fallback: a missing plan is an error here
+	planFile, err := selector.Select(ctx, o.PlanFile, false)
+	if err != nil {
+		return fmt.Errorf("select plan: %w", err)
+	}
+	planFile, err = filepath.Abs(planFile)
+	if err != nil {
+		return fmt.Errorf("resolve plan file: %w", err)
+	}
+
+	branch := getCurrentBranch(req.GitSvc)
+	holder := &status.PhaseHolder{}
+
+	baseLog, err := progress.NewLogger(progress.Config{
+		PlanFile: planFile,
+		Mode:     string(processor.ModePlanReview),
+		Branch:   branch,
+		Params:   runHeaderParams(o, req.Config, processor.ModePlanReview),
+		NoColor:  o.NoColor,
+	}, req.Colors, holder)
+	if err != nil {
+		return fmt.Errorf("create progress logger: %w", err)
+	}
+	// reviewErr covers the review loop only; the follow-on implementation has its own logger
+	var reviewErr error
+	defer func() {
+		if reviewErr != nil {
+			baseLog.SetFailed(reviewErr)
+		}
+		if closeErr := baseLog.Close(); closeErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to close progress log: %v\n", closeErr)
+		}
+	}()
+
+	maxIter := resolveMaxIterations(o.MaxIterations, req.Config)
+
+	var codex codexBannerInfo
+	if req.Config.Executor == config.ExecutorCodex {
+		codex = codexPlanBanner(o, req.Config)
+	}
+	printStartupInfo(startupInfo{
+		PlanFile:                planFile,
+		Branch:                  branch,
+		Mode:                    processor.ModePlanReview,
+		MaxIterations:           maxIter,
+		ProgressPath:            baseLog.Path(),
+		Executor:                req.Config.Executor,
+		PassClaudeMd:            req.Config.PassClaudeMd,
+		PreserveAnthropicAPIKey: req.Config.PreserveAnthropicAPIKey,
+		CodexModel:              codex.taskModel,
+		CodexEffort:             codex.taskEffort,
+		CodexReviewModel:        codex.reviewModel,
+		CodexReviewEffort:       codex.reviewEffort,
+		CodexSandbox:            req.Config.CodexExecutorSandbox(),
+	}, req.Colors)
+	if codex.maxDropped {
+		req.Colors.Warn().Printf("codex does not support 'max' reasoning effort; ignoring (valid: low, medium, high, xhigh)\n")
+	}
+
+	collector := input.NewTerminalCollector(o.NoColor)
+	r := newPlanRunner(o, req, processor.Config{
+		PlanFile:      planFile,
+		ProgressPath:  baseLog.Path(),
+		Mode:          processor.ModePlanReview,
+		MaxIterations: maxIter,
+	}, baseLog, holder, collector, selector)
+
+	if runErr := r.Run(ctx); runErr != nil {
+		wrapped := fmt.Errorf("plan review: %w", runErr)
+		reviewErr = wrapped
+		return wrapped
+	}
+	req.Colors.Info().Printf("\nplan review completed in %s\n", baseLog.Elapsed())
+
+	if !confirmContinue(ctx) {
+		return nil
+	}
+	return runImplementation(ctx, o, req, planFile)
 }
 
 // runReset runs the interactive config reset flow.

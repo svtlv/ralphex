@@ -159,13 +159,13 @@ The read-only rule is enforced twice. The prompt tells the reviewer not to edit.
 **Files:**
 - Modify: `cmd/ralphex.windows/main.go`, `cmd/ralphex.windows/main_test.go`
 
-- [ ] extract the "Continue with plan implementation?" tail of `runPlanMode` (abs path, worktree or branch creation, `executePlan` in `ModeFull`) into one helper used by both modes
-- [ ] in `runPlanMode` call `r.SetPlanFinder(selector)` and `r.SetRepoState(gitSvc)`; pass `CodexEnabled: req.Config.CodexEnabled` and `ExternalReviewToolSet: o.externalReviewToolSet` in its `processor.Config` literal (today only `executePlan` sets them, `main.go:1060`, so `Tool()` would return `none` and External reviewer would always be hidden); completion message and continue question stay as they are
-- [ ] add `runPlanReviewMode`: call `req.GitSvc.EnsureLocalGitignore()` first, as `runPlanMode` does (so `.ralphex/` is ignored); `selector.Select(ctx, o.PlanFile, false)` (existing fzf selector, no auto-plan-mode fallback), progress logger with `Mode: plan-review` and the plan file, startup banner, plan-model params in the run header, `processor.New` with `ModePlanReview` and the same `CodexEnabled` / `ExternalReviewToolSet` fields, `plan_model` spec as the planner model, input collector, `SetRepoState`; no branch, no worktree
-- [ ] after the loop ask "Continue with plan implementation?"; no means exit; yes calls the shared helper; mark the progress log failed on a run error, as plan mode does
-- [ ] route `ModePlanReview` in `run` next to `ModePlan` (before `selectAndExecutePlan`); update the startup info for the new mode
-- [ ] write tests: mode routing, plan selection with an explicit file and with the selector, External reviewer is offered in both plan modes when codex is enabled, `EnsureLocalGitignore` is called in plan-review mode, no branch or worktree created in plan-review mode, continue yes and no, shared helper used by both modes
-- [ ] run `go test ./cmd/...` - must pass before task 9
+- [x] extract the "Continue with plan implementation?" tail of `runPlanMode` (abs path, worktree or branch creation, `executePlan` in `ModeFull`) into one helper used by both modes
+- [x] in `runPlanMode` call `r.SetPlanFinder(selector)` and `r.SetRepoState(gitSvc)`; pass `CodexEnabled: req.Config.CodexEnabled` and `ExternalReviewToolSet: o.externalReviewToolSet` in its `processor.Config` literal (today only `executePlan` sets them, `main.go:1060`, so `Tool()` would return `none` and External reviewer would always be hidden); completion message and continue question stay as they are
+- [x] add `runPlanReviewMode`: call `req.GitSvc.EnsureLocalGitignore()` first, as `runPlanMode` does (so `.ralphex/` is ignored); `selector.Select(ctx, o.PlanFile, false)` (existing fzf selector, no auto-plan-mode fallback), progress logger with `Mode: plan-review` and the plan file, startup banner, plan-model params in the run header, `processor.New` with `ModePlanReview` and the same `CodexEnabled` / `ExternalReviewToolSet` fields, `plan_model` spec as the planner model, input collector, `SetRepoState`; no branch, no worktree
+- [x] after the loop ask "Continue with plan implementation?"; no means exit; yes calls the shared helper; mark the progress log failed on a run error, as plan mode does
+- [x] route `ModePlanReview` in `run` next to `ModePlan` (before `selectAndExecutePlan`); update the startup info for the new mode
+- [x] write tests: mode routing, plan selection with an explicit file and with the selector, External reviewer is offered in both plan modes when codex is enabled, `EnsureLocalGitignore` is called in plan-review mode, no branch or worktree created in plan-review mode, continue yes and no, shared helper used by both modes
+- [x] run `go test ./cmd/...` - must pass before task 9
 
 ### Task 9: Verify acceptance criteria
 
