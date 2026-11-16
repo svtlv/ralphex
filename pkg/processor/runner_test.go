@@ -16,6 +16,7 @@ import (
 	"github.com/svtlv/ralphex/pkg/executor"
 	"github.com/svtlv/ralphex/pkg/processor/mocks"
 	"github.com/svtlv/ralphex/pkg/processor/phase"
+	phasemocks "github.com/svtlv/ralphex/pkg/processor/phase/mocks"
 	"github.com/svtlv/ralphex/pkg/status"
 )
 
@@ -1073,6 +1074,43 @@ func TestRunner_SetInputCollector_ReachesConcretePlanPhase(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Len(t, collector.AskQuestionCalls(), 1)
+}
+
+func TestRunner_SetPlanFinder_StoresInDeps(t *testing.T) {
+	cfg := Config{Mode: ModePlan, PlanDescription: "x", MaxIterations: 5, AppConfig: testAppConfig(t)}
+	r := NewWithExecutors(cfg, newRunnerMockLogger("progress.txt"), Executors{Task: newMockExecutor(nil)}, &status.PhaseHolder{})
+	require.NotNil(t, r.deps)
+	assert.Nil(t, r.deps.PlanFinder)
+
+	finder := &phasemocks.PlanFinderMock{FindRecentFunc: func(_ time.Time) string { return "plan.md" }}
+	r.SetPlanFinder(finder)
+
+	require.NotNil(t, r.deps.PlanFinder)
+	assert.Equal(t, "plan.md", r.deps.PlanFinder.FindRecent(time.Time{}))
+}
+
+func TestRunner_SetRepoState_StoresInDeps(t *testing.T) {
+	cfg := Config{Mode: ModePlan, PlanDescription: "x", MaxIterations: 5, AppConfig: testAppConfig(t)}
+	r := NewWithExecutors(cfg, newRunnerMockLogger("progress.txt"), Executors{Task: newMockExecutor(nil)}, &status.PhaseHolder{})
+	require.NotNil(t, r.deps)
+	assert.Nil(t, r.deps.RepoState)
+
+	reader := &phasemocks.RepoStateReaderMock{RootFunc: func() string { return "/repo" }}
+	r.SetRepoState(reader)
+
+	require.NotNil(t, r.deps.RepoState)
+	assert.Equal(t, "/repo", r.deps.RepoState.Root())
+}
+
+func TestRunner_Setters_NilDeps(t *testing.T) {
+	r := &Runner{}
+
+	r.SetPlanFinder(&phasemocks.PlanFinderMock{})
+	r.SetRepoState(&phasemocks.RepoStateReaderMock{})
+
+	require.NotNil(t, r.deps)
+	assert.NotNil(t, r.deps.PlanFinder)
+	assert.NotNil(t, r.deps.RepoState)
 }
 
 func TestRunner_SetPauseHandler_ReachesConcreteTaskPhase(t *testing.T) {

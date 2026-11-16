@@ -57,14 +57,20 @@ func NewExternalReviewPhase(opts ExternalReviewPhaseOpts) *ExternalReviewPhase {
 
 // Tool returns the effective external review tool after config and back-compat rules.
 func (p *ExternalReviewPhase) Tool() string {
-	if p.cfg.ExternalReviewToolSet && p.cfg.AppConfig != nil && p.cfg.AppConfig.ExternalReviewTool != "" {
-		return p.cfg.AppConfig.ExternalReviewTool
+	return ResolveExternalReviewTool(p.cfg)
+}
+
+// ResolveExternalReviewTool returns the effective external review tool (codex, custom or none)
+// after config and codex_enabled back-compat rules. shared by the external review phase and the plan review phase.
+func ResolveExternalReviewTool(cfg Config) string {
+	if cfg.ExternalReviewToolSet && cfg.AppConfig != nil && cfg.AppConfig.ExternalReviewTool != "" {
+		return cfg.AppConfig.ExternalReviewTool
 	}
-	if !p.cfg.CodexEnabled {
+	if !cfg.CodexEnabled {
 		return "none"
 	}
-	if p.cfg.AppConfig != nil && p.cfg.AppConfig.ExternalReviewTool != "" {
-		return p.cfg.AppConfig.ExternalReviewTool
+	if cfg.AppConfig != nil && cfg.AppConfig.ExternalReviewTool != "" {
+		return cfg.AppConfig.ExternalReviewTool
 	}
 	return "codex"
 }

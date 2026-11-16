@@ -256,6 +256,22 @@ func (r *Runner) SetGitChecker(g GitChecker) {
 	r.deps.Git = g
 }
 
+// SetPlanFinder sets the finder used to locate the plan file written during plan creation.
+func (r *Runner) SetPlanFinder(f phase.PlanFinder) {
+	if r.deps == nil {
+		r.deps = &phase.Deps{}
+	}
+	r.deps.PlanFinder = f
+}
+
+// SetRepoState sets the repository state reader used by the plan review read-only guard.
+func (r *Runner) SetRepoState(s phase.RepoStateReader) {
+	if r.deps == nil {
+		r.deps = &phase.Deps{}
+	}
+	r.deps.RepoState = s
+}
+
 // SetBreakCh sets the break channel for manual termination of review and task loops.
 // each value sent on the channel triggers one break event (repeatable, not close-based).
 func (r *Runner) SetBreakCh(ch <-chan struct{}) {

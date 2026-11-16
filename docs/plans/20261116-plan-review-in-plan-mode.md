@@ -116,13 +116,14 @@ The read-only rule is enforced twice. The prompt tells the reviewer not to edit.
 - Modify: `pkg/processor/phase/external_review.go`, `pkg/processor/phase/phase.go`, `pkg/processor/runner.go`, `pkg/processor/executor_factory.go`
 - Modify tests: `pkg/processor/phase/external_review_test.go`, `pkg/processor/runner_test.go`, `pkg/processor/executor_factory_test.go`
 
-- [ ] extract the external tool resolution from `ExternalReviewPhase.Tool()` into a shared function in package `phase`; keep `Tool()` as a thin caller so behavior does not change
-- [ ] add consumer-side `PlanFinder` (`FindRecent(time.Time) string`) and `RepoStateReader` fields to `phase.Deps`; add `Runner.SetPlanFinder` and `Runner.SetRepoState` setters
-- [ ] executor factory: no code change needed — it already builds `External` and `Custom` for every non-codex mode and leaves `External` nil under `--codex` (`executor_factory.go:24,41`); only add the test below
-- [ ] define a new consumer-side `PlanReviewLogger` interface for the review phase (with `PrintAligned`, `LogQuestion`, `LogAnswer`, warnings, section printing); do not widen `PlanCreationLogger`; add moq `//go:generate` lines for `PlanReviewLogger`, `PlanReviewPrompts` and `PlanFinder` and run `go generate`
-- [ ] write a factory test that both plan modes wire `External` with `codex_command` from config (agrouter-style path) and `Custom` with the script, and that `--codex` leaves `External` unset
-- [ ] write a test that `Tool()` behavior is unchanged after the extraction, and runner tests for the two setters
-- [ ] run `go test ./...` - must pass before task 6
+- [x] extract the external tool resolution from `ExternalReviewPhase.Tool()` into a shared function in package `phase`; keep `Tool()` as a thin caller so behavior does not change
+- [x] add consumer-side `PlanFinder` (`FindRecent(time.Time) string`) and `RepoStateReader` fields to `phase.Deps`; add `Runner.SetPlanFinder` and `Runner.SetRepoState` setters
+- [x] executor factory: no code change needed — it already builds `External` and `Custom` for every non-codex mode and leaves `External` nil under `--codex` (`executor_factory.go:24,41`); only add the test below
+- [x] define a new consumer-side `PlanReviewLogger` interface for the review phase (with `PrintAligned`, `LogQuestion`, `LogAnswer`, warnings, section printing); do not widen `PlanCreationLogger`; add moq `//go:generate` lines for `PlanReviewLogger`, `PlanReviewPrompts` and `PlanFinder` and run `go generate`
+- [x] write a factory test that both plan modes wire `External` with `codex_command` from config (agrouter-style path) and `Custom` with the script, and that `--codex` leaves `External` unset
+- [x] write a test that `Tool()` behavior is unchanged after the extraction, and runner tests for the two setters
+- [x] run `go test ./...` - must pass before task 6
+- note: `moq` was installed with `go install github.com/matryer/moq@latest`; `go generate` now produced `pkg/processor/phase/mocks/` for `PlanReviewLogger`, `PlanReviewPrompts`, `PlanFinder` and `RepoStateReader` (the Task 4 reader mock too). The shared resolver is `phase.ResolveExternalReviewTool(cfg)`
 
 ### Task 6: PlanReviewPhase review loop
 
