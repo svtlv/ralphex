@@ -1,0 +1,8 @@
+[agrouter]
+# long routing docs (CLAUDE.md + llms.txt, ~94 KB) take longer to route
+timeout = 120s
+
+[classifier.typesafe]
+long_context = true
+request_tokens = 128000
+bytes_per_token = 2.5
