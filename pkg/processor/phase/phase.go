@@ -163,6 +163,12 @@ type PlanCreationPrompts interface {
 	PlanPrompt() string
 }
 
+// PlanReviewPrompts renders the plan review prompt and the planner revision prompt.
+type PlanReviewPrompts interface {
+	PlanReviewPrompt(planFile, description string) string
+	PlanRevisionPrompt(planFile, description, findings string) string
+}
+
 // FinalizePrompts renders finalize prompts.
 type FinalizePrompts interface {
 	FinalizePrompt() string

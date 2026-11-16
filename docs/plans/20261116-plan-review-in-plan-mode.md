@@ -87,12 +87,12 @@ The read-only rule is enforced twice. The prompt tells the reviewer not to edit.
 **Files:**
 - Modify: `pkg/processor/prompt_builder.go`, `pkg/processor/prompts.go`, `pkg/processor/prompts_test.go`, `pkg/processor/prompt_builder_test.go`, `pkg/processor/phase/phase.go`, `pkg/plan/parse.go`, `pkg/plan/parse_test.go`
 
-- [ ] add `PlanReviewPrompt(planFile, description string) string` to the prompt builder; replace `{{PLAN_FILE}}` with the explicit plan path and `{{PLAN_DESCRIPTION}}` before the base variable pass (the locator has no plan file in plan mode); then the base variables
-- [ ] add `PlanRevisionPrompt(planFile, description, findings string) string`; a Go constant template that tells the planner: the plan file already exists at the path; read the progress file for earlier Q&A; apply only the listed findings by editing that file in place; keep the plan format (Task and Iteration keywords stay English; checkboxes only in Task sections); do not create a new file; do not emit PLAN_DRAFT or QUESTION; end with PLAN_READY; no markdown in response text
-- [ ] add `plan.ExtractOverview(path string) (string, error)` (or the nearest existing helper) that returns the text of the `## Overview` section, falling back to the first heading; used as the description in ModePlanReview
-- [ ] define a new consumer-side `PlanReviewPrompts` interface in `phase.go` with both builder methods; do not widen the existing plan-creation prompt interface
-- [ ] write tests for variable replacement (including a plan path that differs from the locator), the commit trailer, the revision text, and Overview extraction (present, missing, single-hash plans)
-- [ ] run `go test ./pkg/processor/... ./pkg/plan/...` - must pass before task 4
+- [x] add `PlanReviewPrompt(planFile, description string) string` to the prompt builder; replace `{{PLAN_FILE}}` with the explicit plan path and `{{PLAN_DESCRIPTION}}` before the base variable pass (the locator has no plan file in plan mode); then the base variables
+- [x] add `PlanRevisionPrompt(planFile, description, findings string) string`; a Go constant template that tells the planner: the plan file already exists at the path; read the progress file for earlier Q&A; apply only the listed findings by editing that file in place; keep the plan format (Task and Iteration keywords stay English; checkboxes only in Task sections); do not create a new file; do not emit PLAN_DRAFT or QUESTION; end with PLAN_READY; no markdown in response text
+- [x] add `plan.ExtractOverview(path string) (string, error)` (or the nearest existing helper) that returns the text of the `## Overview` section, falling back to the first heading; used as the description in ModePlanReview
+- [x] define a new consumer-side `PlanReviewPrompts` interface in `phase.go` with both builder methods; do not widen the existing plan-creation prompt interface
+- [x] write tests for variable replacement (including a plan path that differs from the locator), the commit trailer, the revision text, and Overview extraction (present, missing, single-hash plans)
+- [x] run `go test ./pkg/processor/... ./pkg/plan/...` - must pass before task 4
 
 ### Task 4: Findings parser, selection parser and repo guard
 
