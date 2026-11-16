@@ -336,10 +336,23 @@ func (p *ExternalReviewPhase) maxIterations() int {
 }
 
 func (p *ExternalReviewPhase) runReviewTool(ctx context.Context, tool, prompt string) ExecutionResult {
+	return runExternalTool(ctx, p.policy, externalTools{external: p.external, custom: p.custom}, tool, prompt)
+}
+
+// externalTools holds the executors behind the codex and custom external review tools.
+type externalTools struct {
+	external Executor
+	custom   *executor.CustomExecutor
+}
+
+// runExternalTool runs one external review call through the retry policy. the custom tool goes through
+// CustomExecutor.Run, which writes the prompt to a temp file and passes its path to the script.
+// shared by the external review phase and the plan review phase.
+func runExternalTool(ctx context.Context, policy Policy, tools externalTools, tool, prompt string) ExecutionResult {
 	if tool == "custom" {
-		return p.policy.Run(ctx, p.custom.Run, prompt, tool)
+		return policy.Run(ctx, tools.custom.Run, prompt, tool)
 	}
-	return p.policy.Run(ctx, p.external.Run, prompt, tool)
+	return policy.Run(ctx, tools.external.Run, prompt, tool)
 }
 
 func (p *ExternalReviewPhase) reviewPrompt(tool string, isFirst bool, claudeResponse string) string {
