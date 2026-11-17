@@ -122,6 +122,14 @@ ralphex --review --base-ref abc1234 --skip-finalize
 # user reviews with accept/revise/interactive review ($EDITOR)/reject
 ralphex --plan "add user authentication"
 
+# review an existing plan file: reviewer prints findings, you pick which to apply,
+# the planner edits the plan in place; then asks "Continue with plan implementation?"
+ralphex --plan-review docs/plans/x.md
+ralphex --plan-review docs/plans/x.md --plan-reviewer=external
+
+# preselect the plan reviewer for plan creation (ask, external, same, none)
+ralphex --plan "add caching" --plan-reviewer=same
+
 # initialize local .ralphex/ config in current project (commented-out defaults)
 ralphex --init
 
@@ -164,7 +172,7 @@ On Windows, the Ctrl+\ break (SIGQUIT) is unavailable. File-lock-based active se
 
 Configuration directory: `~/.config/ralphex/` (override with `--config-dir` or `RALPHEX_CONFIG_DIR`)
 
-**Prompt files** (`~/.config/ralphex/prompts/`): `task.txt`, `review_first.txt`, `review_second.txt`, `codex.txt`, `codex_review.txt`, `custom_review.txt`, `custom_eval.txt`, `make_plan.txt`, `finalize.txt`. Loading priority for each: local → global → embedded. Review prompts are shared between claude and codex executors — the `{{agent:<name>}}` expansion produces the executor-appropriate agent invocation syntax (Task tool for claude, spawn_agent for codex).
+**Prompt files** (`~/.config/ralphex/prompts/`): `task.txt`, `review_first.txt`, `review_second.txt`, `codex.txt`, `codex_review.txt`, `custom_review.txt`, `custom_eval.txt`, `make_plan.txt`, `plan_review.txt`, `finalize.txt`. Loading priority for each: local → global → embedded. Review prompts are shared between claude and codex executors — the `{{agent:<name>}}` expansion produces the executor-appropriate agent invocation syntax (Task tool for claude, spawn_agent for codex).
 
 **Agent files** (`~/.config/ralphex/agents/`): Custom review agents referenced via `{{agent:name}}` in prompts. On first run, 5 default agents are installed as commented-out templates. Agents use per-file fallback (local → global → embedded) — embedded defaults are always the baseline, so deleting an agent file does not disable it. To disable a specific agent, remove its `{{agent:name}}` reference from the prompt files, not the agent file itself
 
@@ -180,6 +188,8 @@ Configuration directory: `~/.config/ralphex/` (override with `--config-dir` or `
 **External review iterations:** By default, external review runs up to `max(3, max_iterations/5)` iterations. Override with `max_external_iterations` config option or `--max-external-iterations` CLI flag (0 = auto).
 
 **Stalemate detection:** `review_patience` config option (or `--review-patience` CLI flag) terminates the external review loop early when Claude produces no commits for N consecutive rounds. Set to 0 (default) to disable. Useful when the external tool and Claude can't agree on findings.
+
+**Plan review:** after a plan file is written (`--plan`) or on an existing plan (`--plan-review [plan-file]`), ralphex asks `Review the plan before implementation?` with options `External reviewer` (codex or custom script, listed first when available), `Same agent` (the plan executor, read-only) and `Skip review`. The reviewer prints one finding per line as `CRITICAL|MAJOR|MINOR: <section> - <text>` or `NO ISSUES FOUND`; ralphex parses stdout only, so custom review scripts must print findings on stdout. ralphex shows the numbered findings and asks `Which findings should be applied?` (`All findings`, `None`, or Other: `1,3`, `2-4`). The chosen findings go to a planner session that edits the plan in place; the offer repeats (max 5 rounds) until Skip review, no issues, or no findings applied. `plan_reviewer` config option or `--plan-reviewer` flag (`ask`, `external`, `same`, `none`; default `ask`) preselects the reviewer. `--plan-review` conflicts with `--plan`, `--review`, `--external-only`, `--codex-only`, `--tasks-only`, and cannot use `none`. Under `--codex` External reviewer is not offered. A read-only guard compares git HEAD, `git status` and file hashes before and after the review; on any change it warns, discards that round's findings and restores only the plan file. A failed review never blocks the plan. Direct plan execution (full, tasks-only, review modes) runs no plan review. Customize the prompt with `plan_review.txt`.
 
 **Per-phase model configuration:** `plan_model`, `task_model`, and `review_model` config options (or `--plan-model`, `--task-model`, `--review-model` CLI flags) set phase model/effort using `model[:effort]` syntax. Examples: `opus` (model only), `opus:high` (both), `:medium` (effort only). Effort levels: `low`, `medium`, `high`, `xhigh`, `max`. `plan_model` sets plan creation and falls back to `task_model` if empty. `task_model` sets task execution. `review_model` sets review phases and falls back to `task_model` if empty. Parts are appended to the configured `claude_command` as `--model <m>` and/or `--effort <e>`. Custom wrappers may ignore the flags (default behavior via `*) shift ;;`) or map them to their own selection. Empty by default (uses Claude CLI's defaults).
 

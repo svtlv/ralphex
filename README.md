@@ -255,7 +255,7 @@ When `executor = codex` is set in config and the user has also set `external_rev
 
 The `--worktree` flag runs plan execution in an isolated git worktree at `.ralphex/worktrees/<branch>`, enabling parallel execution of multiple plans on the same repo without branch conflicts.
 
-**Supported modes:** `--worktree` only applies to full mode and `--tasks-only`. It is silently ignored for `--review`, `--external-only`, and `--plan` — these modes operate from the current directory.
+**Supported modes:** `--worktree` only applies to full mode and `--tasks-only`. It is silently ignored for `--review`, `--external-only`, `--plan`, and `--plan-review` — these modes operate from the current directory.
 
 **Source checkout state:** Uncommitted files in the source checkout do not have to be stashed first. Ralphex lists them in a warning and does not copy them into the generated worktree. An uncommitted selected plan is copied so it can be committed on the feature branch. A new feature branch starts at the current `HEAD`; an existing feature branch keeps its own tip. Local `.ralphex` configuration is loaded before worktree creation and still applies to the run. Commit any repository changes the plan needs before starting. An unfinished Git operation remains a hard error because completion archives the plan in the source checkout. In-place branch mode also requires a clean checkout because it creates the feature branch in that same working tree.
 
@@ -312,6 +312,69 @@ Continue with plan implementation?
 ```
 
 After plan creation, you can choose to continue with immediate execution or exit to run ralphex later. Progress is logged to `.ralphex/progress/progress-plan-<name>.txt`.
+
+#### Plan Review
+
+After the plan file is written, ralphex offers a review of that file before implementation. There are two entry points and one implementation:
+
+- `ralphex --plan "description"` - the review runs after the plan is ready. A run that continues into implementation gets the review before the tasks.
+- `ralphex --plan-review [plan-file]` - reviews an existing plan file. It asks no planner questions, makes no drafts, and creates no branch or worktree. Without a file argument, the plan selector (fzf or numbered list) picks the plan. After the review it asks `Continue with plan implementation?`, the same as plan mode.
+
+Executing an existing plan directly (full, `--tasks-only`, `--review` modes) runs no plan review.
+
+**Flow:**
+
+```
+plan file written
+   |
+   v
+"Review the plan before implementation?"
+   External reviewer | Same agent | Skip review
+   |
+   v
+reviewer reads the plan and the code, prints findings
+   |
+   v
+numbered findings --> "Which findings should be applied?"
+   |
+   v
+chosen findings --> planner session edits the plan in place
+   |
+   v
+repeat (max 5 rounds) until Skip review, no issues, or no findings applied
+```
+
+**Reviewers:**
+
+| Reviewer | What runs |
+|----------|-----------|
+| External reviewer | The configured external tool: codex (`codex_command`, `codex_model`, ...) or the custom review script (`custom_review_script`). Listed first when available |
+| Same agent | The plan executor (`claude_command`, or codex under `--codex`), read-only |
+| Skip review | No review. Always present |
+
+External reviewer is hidden when `external_review_tool = none`, when no custom script is set, and under `--codex` (which forces the external tool to `none`). Preselecting `external` in those cases logs a warning and skips the review.
+
+**Prompt texts (stable):**
+
+- Reviewer question: `Review the plan before implementation?` with options `External reviewer`, `Same agent`, `Skip review`
+- Findings question: `Which findings should be applied?` with options `All findings`, `None`. Use the Other option to type numbers such as `1,3`, `1 3` or `2-4`. An invalid answer is asked again up to 2 times, then counts as none
+- Continue question: `Continue with plan implementation?`
+
+**Finding format:** the reviewer prints one finding per line as `CRITICAL|MAJOR|MINOR: <section> - <text>`, or exactly `NO ISSUES FOUND`. ralphex parses findings from stdout only. It keeps only lines that match the format and drops exact duplicates. A custom review script must therefore print its findings on stdout.
+
+**Preselecting the reviewer:** set `plan_reviewer` in config or pass `--plan-reviewer` (values `ask`, `external`, `same`, `none`; default `ask`). With a preselected reviewer there is no reviewer question, and the loop runs again only after an applied revision. `--plan-review` with `none` is an error.
+
+```bash
+ralphex --plan-review docs/plans/feature.md
+ralphex --plan-review docs/plans/feature.md --plan-reviewer=external
+ralphex --plan "add caching" --plan-reviewer=same
+```
+
+**Read-only guard:** the review prompt tells the reviewer not to edit files. Because the same-agent reviewer runs with `--dangerously-skip-permissions` in your checkout, the prompt alone cannot stop an edit or a commit. ralphex therefore compares git HEAD, `git status --porcelain` and file content hashes before and after each review (paths under `.ralphex/` are skipped). If anything changed, ralphex logs a warning that names the changed paths, discards that round's findings and ends the review. It restores only the plan file from stored bytes. It does not revert code files or commits. Known limit: the guard cannot tell a reviewer edit from your own edit or commit in another terminal during a review, so such an edit also discards that round's findings.
+
+**Failure rule:** a failed, timed-out or unparseable review never blocks the plan. ralphex logs a warning and continues. Rate limit and quota errors follow the usual `--wait` handling first.
+
+Customize the review prompt with `plan_review.txt` (see [Custom prompts](#custom-prompts)). The review and its questions, answers and warnings are logged to the progress file. In `--plan-review` mode the file is `.ralphex/progress/progress-<plan-stem>-plan-review.txt`.
 
 ## Installation
 
@@ -740,6 +803,9 @@ ralphex --init
 # interactive plan creation
 ralphex --plan "add user authentication"
 
+# review an existing plan file before implementation
+ralphex --plan-review docs/plans/feature.md
+
 # with custom max iterations
 ralphex --max-iterations=100 docs/plans/feature.md
 
@@ -805,6 +871,8 @@ ralphex --serve --port=3000 docs/plans/feature.md
 | `--worktree` | Run in isolated git worktree (full and tasks-only modes only) | false |
 | `--preserve-anthropic-api-key` | Pass `ANTHROPIC_API_KEY` through to claude (for users authenticating Claude Code via API key rather than OAuth/keychain) | false |
 | `--plan` | Create plan interactively (provide description) | - |
+| `--plan-review` | Review an existing plan file (positional argument, or pick with the selector) and apply chosen findings; no branch or worktree is created | false |
+| `--plan-reviewer` | Preselect the plan reviewer: `ask`, `external`, `same` or `none`. Overrides `plan_reviewer`. `none` is an error with `--plan-review` | config/ask |
 | `-s, --serve` | Start web dashboard for real-time streaming | false |
 | `-p, --port` | Web dashboard port (used with `--serve`) | 8080 |
 | `-w, --watch` | Directories to watch for progress files (repeatable) | - |
@@ -935,6 +1003,7 @@ The entire system is designed for customization - both task execution and review
 - `custom_eval.txt` - custom evaluation prompt (Claude evaluates custom tool output)
 - `review_second.txt` - final review, critical/major issues only (default: 2 agents - quality, implementation; customizable)
 - `make_plan.txt` - interactive plan creation prompt
+- `plan_review.txt` - plan review prompt (sent to the plan reviewer; findings as `CRITICAL|MAJOR|MINOR: <section> - <text>`)
 - `finalize.txt` - optional finalize step prompt (disabled by default)
 
 **Comment lines and markdown headers:**
@@ -1000,6 +1069,7 @@ ralphex uses a configuration directory at `~/.config/ralphex/` (override with `-
 │   ├── custom_review.txt
 │   ├── custom_eval.txt
 │   ├── make_plan.txt
+│   ├── plan_review.txt
 │   └── finalize.txt
 └── agents/             # custom review agents (*.txt files)
 ```
@@ -1042,6 +1112,7 @@ Provider-related CLI flags (`--claude-command`, `--claude-args`, `--external-rev
 | `claude_command` | Claude CLI command | `claude` |
 | `claude_args` | Claude CLI arguments | `--dangerously-skip-permissions --output-format stream-json --verbose` |
 | `executor` | Executor for plan creation, task, review, and finalize phases. `""` (default) uses Claude Code; `codex` routes the full pipeline through the codex CLI and skips the external review phase. CLI flag `--codex` takes precedence | empty |
+| `plan_reviewer` | Plan review reviewer: `ask` (default, offers External reviewer first), `external`, `same` or `none`. CLI flag `--plan-reviewer` takes precedence | `ask` |
 | `pass_claude_md` | When `executor = codex`, pass project `CLAUDE.md` to codex as `AGENTS.md` via `-c project_doc_fallback_filenames=["CLAUDE.md"]`. CLI flag `--pass-claude-md` takes precedence | `false` |
 | `plan_model` | Model for plan creation as `model[:effort]` (e.g., `opus`, `opus:high`, `:medium`). Falls back to `task_model` if empty. Same syntax and wrapper behavior as `task_model`. Under `--codex`, selects the codex plan-creation model/effort instead (see *Model selection under `--codex`*) | empty |
 | `task_model` | Model for task execution as `model[:effort]` (e.g., `opus`, `opus:high`, `:medium`). Effort: `low`, `medium`, `high`, `xhigh`, `max`. Appended as `--model <m>` and/or `--effort <e>` to `claude_command`; custom wrappers may ignore or implement the flags. Under `--codex`, selects the codex task-phase model/effort instead (see *Model selection under `--codex`*) | empty |

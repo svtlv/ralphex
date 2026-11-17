@@ -210,6 +210,14 @@ The `--plan "description"` flag enables interactive plan creation:
 - After completion, prompts user: "Continue with plan implementation?"
 - If "Yes", creates branch and runs full execution mode on the new plan
 
+Plan review (after PLAN_READY, and standalone via `--plan-review [plan-file]` = `ModePlanReview`):
+- One reusable `PlanReviewPhase` holds the whole loop; `PlanCreationPhase` stays free of review code. `Runner` calls it after plan creation in `ModePlan` (finding the plan with `plan.Selector.FindRecent(startTime)` through the `PlanFinder` dep) and directly in `ModePlanReview` (description from `plan.ExtractOverview`; no planner questions, drafts, branch or worktree). Both entry points share one "Continue with plan implementation?" tail helper in `main.go`. Direct plan execution (full, tasks-only, review modes) runs no plan review
+- Stable prompt texts: `Review the plan before implementation?` (`External reviewer` first when available, `Same agent`, `Skip review`), `Which findings should be applied?` (`All findings`, `None`, Other for `1,3` / `2-4`), `Continue with plan implementation?`. Reviewer output is one `CRITICAL|MAJOR|MINOR: <section> - <text>` line per finding or `NO ISSUES FOUND`; `parsePlanFindings` keeps only matching lines and drops exact duplicates, so stdout-only parsing also protects custom scripts that merge stderr into stdout
+- Preselect with `plan_reviewer` / `--plan-reviewer` (`ask`, `external`, `same`, `none`; empty = ask). `--plan-review` rejects `none`. External reviewer is hidden when the external tool resolves to `none` (shared `phase.ResolveExternalReviewTool`, also used by `ExternalReviewPhase.Tool()`), so both plan-mode `processor.Config` literals in `main.go` must pass `CodexEnabled` and `ExternalReviewToolSet`; under `--codex` it is forced to `none`. A preselected-but-unavailable reviewer logs a warning and skips the review
+- Reuse of existing settings, no new executors: External reviewer uses `execs.External` (`codex_command`, `codex_model`, ...) or `execs.Custom` through the shared `runExternalTool` adapter (`CustomExecutor.Run` writes the prompt file); Same agent uses `execs.Task` built from `claude_command`/`claude_args`/`plan_model` (codex executor under `--codex`). No code calls `claude` or `codex` by name, so agrouter and wrapper scripts work. `ModePlanReview` uses the plan-mode planner settings (`plan_model` falling back to `task_model`)
+- Read-only repo guard (`plan_review_guard.go`): the prompt alone is not enough, because the same-agent claude reviewer runs with `--dangerously-skip-permissions` in the main checkout and can edit or commit. `snapshotRepo` records plan bytes, HEAD, `status --porcelain -uall -z` entries and a content hash per listed file (size and mtime above 1 MiB), paths resolved against `RepoStateReader.Root()`, `.ralphex/` skipped (the progress file grows during review). `diffSnapshots` compares after the review. On any change: warn with the changed paths (and HEAD move), discard that round's findings, end the review without error; only the plan file is restored from stored bytes, code files and commits are never reverted. Known limit: it cannot tell a reviewer edit from a user edit or commit in another terminal, so such an edit also discards the round. If repo state cannot be read, the review runs with the plan-bytes check only. The guard wraps only the reviewer call, not the planner revision session
+- Failure rule: a failed, timed-out or unparseable review never blocks the plan (warning, continue). Pattern errors (rate limit, quota) go through `HandlePatternMatchError` / `wrapExecutorError` first. Rounds do not use the plan iteration counter; the cap is 5. The revision prompt is a Go-side block (`PlanRevisionPrompt`), not a prompt file, because `make_plan.txt` Step 0 exits at once when the plan exists. Executors already stream reviewer output through `OutputHandler`, so the phase logs only numbered findings, questions, answers and warnings. Each round prints a generic section header under `PhasePlan`. The `--plan-review` progress file is `progress-<plan-stem>-plan-review.txt`
+
 Plan creation signals:
 - `QUESTION` - asks user a question with options (JSON payload)
 - `PLAN_DRAFT` - presents plan draft for review (plan content between markers)
@@ -221,6 +229,10 @@ Key files:
 - `pkg/processor/phase/signals.go` - runtime phase signal parsers for QUESTION and PLAN_DRAFT, plus signal helpers
 - `pkg/processor/signals.go` - processor compatibility wrappers around phase signal helpers
 - `pkg/config/defaults/prompts/make_plan.txt` - plan creation prompt
+- `pkg/processor/phase/plan_review_phase.go` - `PlanReviewPhase` review loop
+- `pkg/processor/phase/plan_review.go` - findings parser, selection parser, feedback formatter
+- `pkg/processor/phase/plan_review_guard.go` - read-only repo guard (snapshot, diff, plan restore)
+- `pkg/config/defaults/prompts/plan_review.txt` - plan review prompt
 
 ## Platform Support
 

@@ -182,12 +182,12 @@ The read-only rule is enforced twice. The prompt tells the reviewer not to edit.
 - Modify: `README.md`, `llms.txt`, `CLAUDE.md`, `docs/custom-providers.md`
 - Delete: `docs/backlog/plan-mode-has-no-external-plan-review.md`
 
-- [ ] README: add a plan review subsection under Plan Creation for both entry points (flow, the three reviewers, the stable prompt texts, how to answer the findings prompt, the read-only guard and its known limit (a user edit or commit in another terminal during a review also discards that round's findings), the failure rule); add `--plan-review` and `--plan-reviewer` to the CLI flag table; add `plan_reviewer` to the config table; add `plan_review.txt` to the prompt file lists and the config directory tree; say that `--codex` skips the external reviewer and that direct plan execution runs no plan review
-- [ ] llms.txt: add the `plan_review.txt` prompt, the `plan_reviewer` option, and the `--plan-review` and `--plan-reviewer` flags with examples (`ralphex --plan-review docs/plans/x.md --plan-reviewer=external`)
-- [ ] CLAUDE.md: extend the Plan Creation Mode section with the review step, the standalone mode, the key files (`pkg/processor/phase/plan_review_phase.go`, `plan_review.go`, `plan_review_guard.go`, `pkg/config/defaults/prompts/plan_review.txt`), the design decisions above (including the repo guard and why the prompt alone is not enough), and the reuse of existing settings
-- [ ] `docs/custom-providers.md`: say that custom review scripts must print findings on stdout for plan review
-- [ ] delete the backlog file with `git rm`
-- [ ] run the final test suite again - must pass
+- [x] README: add a plan review subsection under Plan Creation for both entry points (flow, the three reviewers, the stable prompt texts, how to answer the findings prompt, the read-only guard and its known limit (a user edit or commit in another terminal during a review also discards that round's findings), the failure rule); add `--plan-review` and `--plan-reviewer` to the CLI flag table; add `plan_reviewer` to the config table; add `plan_review.txt` to the prompt file lists and the config directory tree; say that `--codex` skips the external reviewer and that direct plan execution runs no plan review
+- [x] llms.txt: add the `plan_review.txt` prompt, the `plan_reviewer` option, and the `--plan-review` and `--plan-reviewer` flags with examples (`ralphex --plan-review docs/plans/x.md --plan-reviewer=external`)
+- [x] CLAUDE.md: extend the Plan Creation Mode section with the review step, the standalone mode, the key files (`pkg/processor/phase/plan_review_phase.go`, `plan_review.go`, `plan_review_guard.go`, `pkg/config/defaults/prompts/plan_review.txt`), the design decisions above (including the repo guard and why the prompt alone is not enough), and the reuse of existing settings
+- [x] `docs/custom-providers.md`: say that custom review scripts must print findings on stdout for plan review
+- [x] delete the backlog file with `git rm`
+- [x] run the final test suite again - must pass
 
 ## Post-Completion
 - Ask the user before running the toy end-to-end test (`./scripts/internal/prep-toy-test.sh`, then `ralphex --plan` and `ralphex --plan-review docs/plans/fix-issues.md`). It uses claude and codex credits.
