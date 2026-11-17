@@ -31,13 +31,6 @@ const (
 	findingsOptionNone = "None"
 )
 
-// external review tool names, as returned by ResolveExternalReviewTool.
-const (
-	externalToolCodex    = "codex"
-	externalToolCustom   = "custom"
-	externalToolDisabled = "none"
-)
-
 // PlanReviewRequest identifies the plan file to review and the task description used for revisions.
 type PlanReviewRequest struct {
 	PlanFile    string
@@ -178,7 +171,9 @@ func (p *PlanReviewPhase) externalTool() string {
 		}
 	case externalToolDisabled:
 	default:
-		if p.tools.external != nil {
+		// CodexEnabled is cleared at startup when the codex binary is missing, so an explicit
+		// external_review_tool = codex without a codex install does not offer a reviewer that cannot run
+		if p.cfg.CodexEnabled && p.tools.external != nil {
 			return externalToolCodex
 		}
 	}
@@ -284,7 +279,7 @@ func (p *PlanReviewPhase) guardedReview(ctx context.Context, req PlanReviewReque
 	// the guard check runs first: a reviewer that edited files and then failed still has to be reported
 	// and the plan file restored. a pattern error (limit, quota) is still returned after that.
 	after, afterErr := snapshotRepo(p.deps.RepoState, req.PlanFile)
-	if afterErr != nil && before.hasRepo {
+	if afterErr != nil && before.hasRepo && !after.hasRepo {
 		p.log.Print("warning: repo state unreadable after plan review, read-only guard checks the plan file only: %v", afterErr)
 	}
 	tripped := p.guardTripped(before, after)

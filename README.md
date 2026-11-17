@@ -56,7 +56,8 @@ ralphex solves both problems. Each task executes in a fresh Claude Code session 
 - **Docker support** - run in isolated container for safer autonomous execution
 - **Notifications** - optional alerts on completion/failure via Telegram, Email, Slack, Webhook, or custom script
 - **Worktree isolation** - run multiple plans in parallel via `--worktree` flag
-- **Multiple modes** - full execution, tasks-only, review-only, external-only, or plan creation
+- **Multiple modes** - full execution, tasks-only, review-only, external-only, plan creation, or plan review
+- **Plan review** - review a plan file before implementation with an external reviewer or the same agent, via `--plan-review` or after `--plan`
 
 ## Quick Start
 
@@ -306,12 +307,17 @@ QUESTION: Which cache backend?
 [10:31:00] continuing plan creation...
 [10:32:05] plan written to docs/plans/add-api-caching.md
 
+Review the plan before implementation?
+  > External reviewer
+    Same agent
+    Skip review
+
 Continue with plan implementation?
   > Yes, execute plan
     No, exit
 ```
 
-After plan creation, you can choose to continue with immediate execution or exit to run ralphex later. Progress is logged to `.ralphex/progress/progress-plan-<name>.txt`.
+After plan creation and the optional [plan review](#plan-review), you can choose to continue with immediate execution or exit to run ralphex later. Progress is logged to `.ralphex/progress/progress-plan-<name>.txt`.
 
 #### Plan Review
 
@@ -362,7 +368,7 @@ External reviewer is hidden when `external_review_tool = none`, when no custom s
 
 **Finding format:** the reviewer prints one finding per line as `CRITICAL|MAJOR|MINOR: <section> - <text>`, or exactly `NO ISSUES FOUND`. ralphex parses findings from stdout only. It keeps only lines that match the format and drops exact duplicates. A custom review script must therefore print its findings on stdout.
 
-**Preselecting the reviewer:** set `plan_reviewer` in config or pass `--plan-reviewer` (values `ask`, `external`, `same`, `none`; default `ask`). With a preselected reviewer there is no reviewer question, and the loop runs again only after an applied revision. `--plan-review` with `none` is an error.
+**Preselecting the reviewer:** set `plan_reviewer` in config or pass `--plan-reviewer` (values `ask`, `external`, `same`, `none`; default `ask`). With a preselected reviewer there is no reviewer question, and the loop runs again only after an applied revision. `--plan-review` with `none` is an error. `--plan-review` cannot be combined with `--plan`, `--review`, `--external-only`, `--codex-only` or `--tasks-only`. It also fails when `plan_reviewer = none` is set in config.
 
 ```bash
 ralphex --plan-review docs/plans/feature.md
@@ -964,6 +970,7 @@ Custom prompt files support variable expansion. All variables use the `{{VARIABL
 | `{{PROGRESS_FILE}}` | Path to the progress log file | `.ralphex/progress/progress-feature.txt` |
 | `{{GOAL}}` | Human-readable goal description | `implementation of plan at docs/plans/feature.md` |
 | `{{DEFAULT_BRANCH}}` | Default branch name (overridable via `--base-ref` or `default_branch` config) | `main`, `master`, `origin/main` |
+| `{{PLAN_DESCRIPTION}}` | What the plan should achieve (plan creation and plan review prompts only) | `add health check endpoint` |
 | `{{agent:name}}` | Expands to Task tool instructions for the named agent | (see below) |
 
 **Agent references:**

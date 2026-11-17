@@ -44,9 +44,10 @@ type repoSnapshot struct {
 }
 
 // snapshotRepo records the state the guard compares after a review.
-// the returned snapshot always carries the plan bytes when the plan file is readable. when repo state
-// cannot be read, it returns that error together with a plan-bytes-only snapshot, so the caller can
-// downgrade the guard instead of failing the review.
+// the returned snapshot carries the plan bytes when the plan file is readable and the repo state when it
+// can be read. each part is gathered independently, so a reviewer that deleted the plan file is still
+// checked for other edits. when either part is missing the matching error is returned together with the
+// partial snapshot, so the caller can downgrade the guard instead of failing the review.
 func snapshotRepo(reader RepoStateReader, planFile string) (repoSnapshot, error) {
 	snap := repoSnapshot{}
 	abs, err := filepath.Abs(planFile)
@@ -54,40 +55,71 @@ func snapshotRepo(reader RepoStateReader, planFile string) (repoSnapshot, error)
 		return snap, fmt.Errorf("resolve plan path: %w", err)
 	}
 	snap.planAbs = abs
-	data, err := os.ReadFile(abs) //nolint:gosec // plan path comes from the user's own selection
-	if err != nil {
-		return snap, fmt.Errorf("read plan file: %w", err)
-	}
-	snap.plan = data
-	snap.planMode = 0o644
-	if fi, statErr := os.Stat(abs); statErr == nil {
-		snap.planMode = fi.Mode().Perm()
+	data, planErr := os.ReadFile(abs) //nolint:gosec // plan path comes from the user's own selection
+	if planErr == nil {
+		snap.plan = data
+		snap.planMode = 0o644
+		if fi, statErr := os.Stat(abs); statErr == nil {
+			snap.planMode = fi.Mode().Perm()
+		}
 	}
 
+	repoErr := snap.readRepoState(reader)
+	if planErr != nil {
+		return snap, fmt.Errorf("read plan file: %w", planErr)
+	}
+	return snap, repoErr
+}
+
+// readRepoState fills HEAD, status entries and content fingerprints. hasRepo stays false on error.
+func (s *repoSnapshot) readRepoState(reader RepoStateReader) error {
 	if reader == nil {
-		return snap, errors.New("repo state reader is not set")
+		return errors.New("repo state reader is not set")
 	}
 	root := reader.Root()
 	head, err := reader.HeadHash()
 	if err != nil {
-		return snap, fmt.Errorf("read HEAD: %w", err)
+		return fmt.Errorf("read HEAD: %w", err)
 	}
 	porcelain, err := reader.StatusPorcelain()
 	if err != nil {
-		return snap, fmt.Errorf("read status: %w", err)
+		return fmt.Errorf("read status: %w", err)
 	}
 
-	snap.hasRepo = true
-	snap.head = head
-	snap.status = parsePorcelainZ(porcelain)
-	snap.hashes = make(map[string]string, len(snap.status))
-	for path := range snap.status {
-		snap.hashes[path] = fingerprintFile(filepath.Join(root, filepath.FromSlash(path)))
+	s.hasRepo = true
+	s.head = head
+	s.status = parsePorcelainZ(porcelain)
+	s.hashes = make(map[string]string, len(s.status))
+	for path := range s.status {
+		s.hashes[path] = fingerprintFile(filepath.Join(root, filepath.FromSlash(path)))
 	}
-	if rel, relErr := filepath.Rel(root, abs); relErr == nil && !strings.HasPrefix(rel, "..") {
-		snap.planRel = filepath.ToSlash(rel)
+	s.planRel = relToRoot(root, s.planAbs)
+	return nil
+}
+
+// relToRoot returns abs relative to root as a slash path, or "" when abs is outside root.
+// git reports the real repository root, so when the plain comparison fails (the plan path goes through
+// a symlink, such as /var and /private/var on macOS) both paths are compared again with symlinks resolved.
+func relToRoot(root, abs string) string {
+	if rel, ok := relInside(root, abs); ok {
+		return rel
 	}
-	return snap, nil
+	realRoot, rootErr := filepath.EvalSymlinks(root)
+	realAbs, absErr := filepath.EvalSymlinks(abs)
+	if rootErr != nil || absErr != nil {
+		return ""
+	}
+	rel, _ := relInside(realRoot, realAbs)
+	return rel
+}
+
+// relInside returns target relative to base as a slash path and whether target is inside base.
+func relInside(base, target string) (string, bool) {
+	rel, err := filepath.Rel(base, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return filepath.ToSlash(rel), true
 }
 
 // parsePorcelainZ parses `status --porcelain -uall -z` output into path -> status entries.
@@ -168,7 +200,7 @@ func diffSnapshots(before, after repoSnapshot) (changed []string, headMoved bool
 		}
 	}
 
-	if !bytes.Equal(before.plan, after.plan) {
+	if planChanged(before, after) {
 		name := before.planRel
 		if name == "" {
 			name = before.planAbs
@@ -184,9 +216,10 @@ func diffSnapshots(before, after repoSnapshot) (changed []string, headMoved bool
 	return changed, headMoved
 }
 
-// planChanged reports whether the plan file bytes differ between two snapshots.
+// planChanged reports whether the plan file bytes differ between two snapshots, or the file was removed
+// (an unreadable plan has nil bytes, which an empty plan does not).
 func planChanged(before, after repoSnapshot) bool {
-	return !bytes.Equal(before.plan, after.plan)
+	return !bytes.Equal(before.plan, after.plan) || (before.plan == nil) != (after.plan == nil)
 }
 
 // restorePlan writes the plan bytes stored in the snapshot back to the plan file.

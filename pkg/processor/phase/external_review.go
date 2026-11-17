@@ -60,6 +60,13 @@ func (p *ExternalReviewPhase) Tool() string {
 	return ResolveExternalReviewTool(p.cfg)
 }
 
+// external review tool names, as returned by ResolveExternalReviewTool.
+const (
+	externalToolCodex    = "codex"
+	externalToolCustom   = "custom"
+	externalToolDisabled = "none"
+)
+
 // ResolveExternalReviewTool returns the effective external review tool (codex, custom or none)
 // after config and codex_enabled back-compat rules. shared by the external review phase and the plan review phase.
 func ResolveExternalReviewTool(cfg Config) string {
@@ -67,21 +74,21 @@ func ResolveExternalReviewTool(cfg Config) string {
 		return cfg.AppConfig.ExternalReviewTool
 	}
 	if !cfg.CodexEnabled {
-		return "none"
+		return externalToolDisabled
 	}
 	if cfg.AppConfig != nil && cfg.AppConfig.ExternalReviewTool != "" {
 		return cfg.AppConfig.ExternalReviewTool
 	}
-	return "codex"
+	return externalToolCodex
 }
 
 // Run executes the configured external review loop and reports whether fixes need post-review.
 func (p *ExternalReviewPhase) Run(ctx context.Context) (ExternalReviewOutcome, error) {
 	switch p.Tool() {
-	case "none":
+	case externalToolDisabled:
 		p.log.Print("external review disabled, skipping...")
 		return ExternalReviewOutcome{}, nil
-	case "custom":
+	case externalToolCustom:
 		return p.runCustom(ctx)
 	default:
 		return p.runCodex(ctx)
@@ -92,7 +99,7 @@ func (p *ExternalReviewPhase) runCodex(ctx context.Context) (ExternalReviewOutco
 	if p.external == nil {
 		return ExternalReviewOutcome{}, errors.New("codex review executor not configured")
 	}
-	return p.runLoop(ctx, "codex")
+	return p.runLoop(ctx, externalToolCodex)
 }
 
 func (p *ExternalReviewPhase) runCustom(ctx context.Context) (ExternalReviewOutcome, error) {
@@ -349,28 +356,28 @@ type externalTools struct {
 // CustomExecutor.Run, which writes the prompt to a temp file and passes its path to the script.
 // shared by the external review phase and the plan review phase.
 func runExternalTool(ctx context.Context, policy Policy, tools externalTools, tool, prompt string) ExecutionResult {
-	if tool == "custom" {
+	if tool == externalToolCustom {
 		return policy.Run(ctx, tools.custom.Run, prompt, tool)
 	}
 	return policy.Run(ctx, tools.external.Run, prompt, tool)
 }
 
 func (p *ExternalReviewPhase) reviewPrompt(tool string, isFirst bool, claudeResponse string) string {
-	if tool == "custom" {
+	if tool == externalToolCustom {
 		return p.prompts.CustomReviewPrompt(isFirst, claudeResponse)
 	}
 	return p.prompts.CodexReviewPrompt(isFirst, claudeResponse)
 }
 
 func (p *ExternalReviewPhase) evalPrompt(tool, output string) string {
-	if tool == "custom" {
+	if tool == externalToolCustom {
 		return p.prompts.CustomEvaluationPrompt(output)
 	}
 	return p.prompts.CodexEvaluationPrompt(output)
 }
 
 func (p *ExternalReviewPhase) section(tool string, iteration int) status.Section {
-	if tool == "custom" {
+	if tool == externalToolCustom {
 		return status.NewCustomIterationSection(iteration)
 	}
 	return status.NewCodexIterationSection(iteration)

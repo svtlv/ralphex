@@ -1140,21 +1140,15 @@ func printStartupInfo(info startupInfo, colors *progress.Colors) {
 	}
 
 	if info.Mode == processor.ModePlanReview {
-		colors.Info().Printf("starting plan review (max %d iterations)\n", info.MaxIterations)
-		displayMeta(colors, 0, info.PlanFile, "", info.Branch, info.ProgressPath)
-		printExecutorInfo(info, colors)
-		if info.PreserveAnthropicAPIKey {
-			colors.Warn().Printf("auth: ANTHROPIC_API_KEY passthrough enabled\n")
+		// plan review runs a capped number of rounds, not max_iterations
+		colors.Info().Printf("starting plan review\n")
+	} else {
+		modeStr := ""
+		if info.Mode != processor.ModeFull {
+			modeStr = fmt.Sprintf(" (%s mode)", info.Mode)
 		}
-		colors.Info().Printf("\n")
-		return
+		colors.Info().Printf("starting ralphex loop (max %d iterations)%s\n", info.MaxIterations, modeStr)
 	}
-
-	modeStr := ""
-	if info.Mode != processor.ModeFull {
-		modeStr = fmt.Sprintf(" (%s mode)", info.Mode)
-	}
-	colors.Info().Printf("starting ralphex loop (max %d iterations)%s\n", info.MaxIterations, modeStr)
 	displayMeta(colors, 0, info.PlanFile, "", info.Branch, info.ProgressPath)
 	printExecutorInfo(info, colors)
 	if info.PreserveAnthropicAPIKey {
@@ -1319,44 +1313,18 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	// Follow-on execution errors (executePlan/runWithWorktree below) do not affect
 	// this log since plan creation already succeeded by that point.
 	var planCreationErr error
-	defer func() {
-		if planCreationErr != nil {
-			baseLog.SetFailed(planCreationErr)
-		}
-		if closeErr := baseLog.Close(); closeErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to close progress log: %v\n", closeErr)
-		}
-	}()
+	defer func() { closePlanLog(baseLog, planCreationErr) }()
 
 	maxIter := resolveMaxIterations(o.MaxIterations, req.Config)
 
-	// resolve effective codex model/effort so the plan-mode banner reflects what
-	// the codex executor receives. codex executor only, so the max-effort warning
-	// is not a false positive in claude mode.
-	var codex codexBannerInfo
-	if req.Config.Executor == config.ExecutorCodex {
-		codex = codexPlanBanner(o, req.Config)
-	}
-
 	// print startup info for plan mode
-	printStartupInfo(startupInfo{
-		PlanDescription:         o.PlanDescription,
-		Branch:                  branch,
-		Mode:                    processor.ModePlan,
-		MaxIterations:           maxIter,
-		ProgressPath:            baseLog.Path(),
-		Executor:                req.Config.Executor,
-		PassClaudeMd:            req.Config.PassClaudeMd,
-		PreserveAnthropicAPIKey: req.Config.PreserveAnthropicAPIKey,
-		CodexModel:              codex.taskModel,
-		CodexEffort:             codex.taskEffort,
-		CodexReviewModel:        codex.reviewModel,
-		CodexReviewEffort:       codex.reviewEffort,
-		CodexSandbox:            req.Config.CodexExecutorSandbox(),
-	}, req.Colors)
-	if codex.maxDropped {
-		req.Colors.Warn().Printf("codex does not support 'max' reasoning effort; ignoring (valid: low, medium, high, xhigh)\n")
-	}
+	printPlanStartup(o, req, startupInfo{
+		PlanDescription: o.PlanDescription,
+		Branch:          branch,
+		Mode:            processor.ModePlan,
+		MaxIterations:   maxIter,
+		ProgressPath:    baseLog.Path(),
+	})
 
 	// create input collector
 	collector := input.NewTerminalCollector(o.NoColor)
@@ -1406,6 +1374,39 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 // answer without a terminal.
 var confirmContinue = func(ctx context.Context) bool {
 	return input.AskYesNo(ctx, "Continue with plan implementation?", os.Stdin, os.Stdout)
+}
+
+// printPlanStartup completes the startup banner of a plan mode with the executor settings and prints it.
+// the codex model/effort is resolved only under the codex executor, so the max-effort warning is not a
+// false positive in claude mode.
+func printPlanStartup(o opts, req executePlanRequest, info startupInfo) {
+	var codex codexBannerInfo
+	if req.Config.Executor == config.ExecutorCodex {
+		codex = codexPlanBanner(o, req.Config)
+	}
+	info.Executor = req.Config.Executor
+	info.PassClaudeMd = req.Config.PassClaudeMd
+	info.PreserveAnthropicAPIKey = req.Config.PreserveAnthropicAPIKey
+	info.CodexModel = codex.taskModel
+	info.CodexEffort = codex.taskEffort
+	info.CodexReviewModel = codex.reviewModel
+	info.CodexReviewEffort = codex.reviewEffort
+	info.CodexSandbox = req.Config.CodexExecutorSandbox()
+	printStartupInfo(info, req.Colors)
+	if codex.maxDropped {
+		req.Colors.Warn().Printf("codex does not support 'max' reasoning effort; ignoring (valid: low, medium, high, xhigh)\n")
+	}
+}
+
+// closePlanLog closes a plan mode progress log. a non-nil runErr is recorded as the failure first, so a
+// restart keeps the history (issue #288).
+func closePlanLog(log *progress.Logger, runErr error) {
+	if runErr != nil {
+		log.SetFailed(runErr)
+	}
+	if closeErr := log.Close(); closeErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to close progress log: %v\n", closeErr)
+	}
 }
 
 // newPlanRunner builds the runner shared by plan creation and plan-review modes. base carries the
@@ -1519,39 +1520,17 @@ func runPlanReviewMode(ctx context.Context, o opts, req executePlanRequest, sele
 	}
 	// reviewErr covers the review loop only; the follow-on implementation has its own logger
 	var reviewErr error
-	defer func() {
-		if reviewErr != nil {
-			baseLog.SetFailed(reviewErr)
-		}
-		if closeErr := baseLog.Close(); closeErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to close progress log: %v\n", closeErr)
-		}
-	}()
+	defer func() { closePlanLog(baseLog, reviewErr) }()
 
 	maxIter := resolveMaxIterations(o.MaxIterations, req.Config)
 
-	var codex codexBannerInfo
-	if req.Config.Executor == config.ExecutorCodex {
-		codex = codexPlanBanner(o, req.Config)
-	}
-	printStartupInfo(startupInfo{
-		PlanFile:                planFile,
-		Branch:                  branch,
-		Mode:                    processor.ModePlanReview,
-		MaxIterations:           maxIter,
-		ProgressPath:            baseLog.Path(),
-		Executor:                req.Config.Executor,
-		PassClaudeMd:            req.Config.PassClaudeMd,
-		PreserveAnthropicAPIKey: req.Config.PreserveAnthropicAPIKey,
-		CodexModel:              codex.taskModel,
-		CodexEffort:             codex.taskEffort,
-		CodexReviewModel:        codex.reviewModel,
-		CodexReviewEffort:       codex.reviewEffort,
-		CodexSandbox:            req.Config.CodexExecutorSandbox(),
-	}, req.Colors)
-	if codex.maxDropped {
-		req.Colors.Warn().Printf("codex does not support 'max' reasoning effort; ignoring (valid: low, medium, high, xhigh)\n")
-	}
+	printPlanStartup(o, req, startupInfo{
+		PlanFile:      planFile,
+		Branch:        branch,
+		Mode:          processor.ModePlanReview,
+		MaxIterations: maxIter,
+		ProgressPath:  baseLog.Path(),
+	})
 
 	collector := input.NewTerminalCollector(o.NoColor)
 	r := newPlanRunner(o, req, processor.Config{

@@ -295,6 +295,11 @@ func TestPlanReviewPhase_Run_UnavailableExternal(t *testing.T) {
 			want:  "no external review tool is configured",
 		},
 		{
+			name:  "explicit codex tool but codex binary missing",
+			setup: func(e *planReviewEnv) { e.cfg.CodexEnabled = false },
+			want:  "no external review tool is configured",
+		},
+		{
 			name:  "custom tool without script",
 			setup: func(e *planReviewEnv) { e.cfg.AppConfig.ExternalReviewTool = "custom" },
 			want:  "no external review tool is configured",
@@ -325,6 +330,18 @@ func TestPlanReviewPhase_Run_UnavailableExternal(t *testing.T) {
 func TestPlanReviewPhase_Run_AskHidesUnavailableExternal(t *testing.T) {
 	e := newPlanReviewEnv(t, "ask")
 	e.cfg.AppConfig.ExternalReviewTool = "none"
+	e.answers = []string{reviewerOptionSkip}
+
+	require.NoError(t, e.run(t.Context()))
+
+	calls := e.input.AskQuestionCalls()
+	require.Len(t, calls, 1)
+	assert.Equal(t, []string{reviewerOptionSame, reviewerOptionSkip}, calls[0].Options)
+}
+
+func TestPlanReviewPhase_Run_AskHidesExternalWhenCodexBinaryMissing(t *testing.T) {
+	e := newPlanReviewEnv(t, "ask")
+	e.cfg.CodexEnabled = false // the factory clears it when the codex binary is not found
 	e.answers = []string{reviewerOptionSkip}
 
 	require.NoError(t, e.run(t.Context()))
@@ -677,6 +694,23 @@ func TestPlanReviewPhase_Run_GuardPlanPathNotListedTwice(t *testing.T) {
 
 	assert.Equal(t, 0, e.events.count("print: warning: plan review is read-only", "docs/plans/p.md"), "restored plan path stays out of the changed-paths warning")
 	assert.Equal(t, 1, e.events.count("print: warning: plan review is read-only", "main.go"))
+}
+
+func TestPlanReviewPhase_Run_GuardCatchesCodeEditWhenReviewerDeletesPlan(t *testing.T) {
+	e := newPlanReviewEnv(t, "same")
+	e.planner.RunFunc = func(context.Context, string) executor.Result {
+		require.NoError(t, os.Remove(e.planFile))
+		writeGuardFile(e.t, e.reader.root, "main.go", "package main")
+		e.reader.status = zStatus("?? main.go")
+		return executor.Result{Output: findingsOutput}
+	}
+
+	require.NoError(t, e.run(t.Context()))
+
+	assert.Equal(t, "# plan\n", e.readPlan(), "deleted plan is restored")
+	assert.Equal(t, 1, e.events.count("print: warning: plan review is read-only", "main.go"), "code edit is still reported")
+	assert.Equal(t, 0, e.events.count("print: warning: repo state unreadable", ""), "repo state was readable")
+	assert.Empty(t, e.input.AskQuestionCalls(), "findings of a tripped round are never shown")
 }
 
 func TestPlanReviewPhase_Run_GuardIgnoresRalphexDir(t *testing.T) {

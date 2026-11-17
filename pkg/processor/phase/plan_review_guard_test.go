@@ -306,6 +306,53 @@ func TestSnapshotRepo_PlanFileErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), "read plan file")
 }
 
+func TestSnapshotRepo_PlanFileMissingKeepsRepoState(t *testing.T) {
+	reader, planFile := guardEnv(t)
+	require.NoError(t, os.Remove(planFile))
+
+	snap, err := snapshotRepo(reader, planFile)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read plan file")
+	assert.True(t, snap.hasRepo, "repo state is read although the plan file is gone")
+	assert.Nil(t, snap.plan)
+}
+
+func TestPlanChanged_PlanRemoved(t *testing.T) {
+	before := repoSnapshot{plan: []byte{}} // empty plan file
+	assert.True(t, planChanged(before, repoSnapshot{}), "removing an empty plan file is a change")
+	assert.False(t, planChanged(before, repoSnapshot{plan: []byte{}}))
+}
+
+func TestSnapshotRepo_PlanPathThroughSymlink(t *testing.T) {
+	realRoot := t.TempDir()
+	writeGuardFile(t, realRoot, "docs/plans/p.md", "# plan\n")
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(realRoot, link); err != nil {
+		t.Skipf("symlinks not available: %v", err)
+	}
+	// git reports the real root, the plan path goes through the symlink
+	reader := &fakeRepoReader{root: realRoot, head: "a", status: zStatus("?? docs/plans/p.md")}
+
+	snap, err := snapshotRepo(reader, filepath.Join(link, "docs", "plans", "p.md"))
+	require.NoError(t, err)
+
+	assert.Equal(t, "docs/plans/p.md", snap.planRel, "plan path is made relative to the real root")
+}
+
+func TestRelToRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "repo")
+	tests := []struct{ name, abs, want string }{
+		{name: "inside", abs: filepath.Join(root, "a", "b.md"), want: "a/b.md"},
+		{name: "outside", abs: filepath.Join(filepath.Dir(root), "other", "b.md"), want: ""},
+		{name: "dot-dot prefixed name is inside", abs: filepath.Join(root, "..plan.md"), want: "..plan.md"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, relToRoot(root, tc.abs))
+		})
+	}
+}
+
 func TestPlanRestore(t *testing.T) {
 	reader, planFile := guardEnv(t)
 	before, err := snapshotRepo(reader, planFile)

@@ -3917,6 +3917,26 @@ func TestRunPlanReviewMode_ProgressKeepsWarningAndRawOutput(t *testing.T) {
 	assert.Contains(t, string(data), "the plan looks odd but has no list")
 }
 
+func TestRunPlanReviewMode_CodexExecutorHidesExternalReviewer(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fake codex")
+	}
+	fx := setupPlanModeFixture(t, config.PlanReviewerExternal)
+	marker := filepath.Join(t.TempDir(), "codex-calls")
+	fx.req.Config.Executor = config.ExecutorCodex
+	fx.req.Config.CodexEnabled = true
+	fx.req.Config.CodexCommand = writeFakeCodexReview(t, marker)
+	stubContinue(t, false)
+
+	err := runPlanReviewMode(t.Context(), opts{PlanFile: fx.planFile, NoColor: true}, fx.req, plan.NewSelector(fx.req.Config.PlansDir, testColors()))
+	require.NoError(t, err)
+
+	assert.NoFileExists(t, marker, "the external reviewer is not available under the codex executor")
+	data, readErr := os.ReadFile(filepath.Join(fx.dir, ".ralphex", "progress", "progress-feature-plan-review.txt"))
+	require.NoError(t, readErr)
+	assert.Contains(t, string(data), "not available with the codex executor")
+}
+
 func TestRunPlanMode_ExternalReviewerAndContinue(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell script fakes")
