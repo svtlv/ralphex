@@ -358,7 +358,7 @@ repeat (max 5 rounds) until Skip review, no issues, or no findings applied
 | Same agent | The plan executor (`claude_command`, or codex under `--codex`), read-only |
 | Skip review | No review. Always present |
 
-External reviewer is hidden when `external_review_tool = none`, when no custom script is set, and under `--codex` (which forces the external tool to `none`). Preselecting `external` in those cases logs a warning and skips the review.
+External reviewer is hidden when `external_review_tool = none`, when no custom script is set, and under `--codex` (which forces the external tool to `none`).
 
 **Prompt texts (stable):**
 
@@ -368,12 +368,10 @@ External reviewer is hidden when `external_review_tool = none`, when no custom s
 
 **Finding format:** the reviewer prints one finding per line as `CRITICAL|MAJOR|MINOR: <section> - <text>`, or exactly `NO ISSUES FOUND`. ralphex parses findings from stdout only. It keeps only lines that match the format and drops exact duplicates. A custom review script must therefore print its findings on stdout.
 
-**Preselecting the reviewer:** set `plan_reviewer` in config or pass `--plan-reviewer` (values `ask`, `external`, `same`, `none`; default `ask`). With a preselected reviewer there is no reviewer question, and the loop runs again only after an applied revision. `--plan-review` with `none` is an error. `--plan-review` cannot be combined with `--plan`, `--review`, `--external-only`, `--codex-only` or `--tasks-only`. It also fails when `plan_reviewer = none` is set in config.
+**Always interactive:** ralphex asks the reviewer question every time. There is no config option or flag to preselect a reviewer; choose `Skip review` to go on without one. `--plan-review` cannot be combined with `--plan`, `--review`, `--external-only`, `--codex-only` or `--tasks-only`.
 
 ```bash
 ralphex --plan-review docs/plans/feature.md
-ralphex --plan-review docs/plans/feature.md --plan-reviewer=external
-ralphex --plan "add caching" --plan-reviewer=same
 ```
 
 **Read-only guard:** the review prompt tells the reviewer not to edit files. Because the same-agent reviewer runs with `--dangerously-skip-permissions` in your checkout, the prompt alone cannot stop an edit or a commit. ralphex therefore compares git HEAD, `git status --porcelain` and file content hashes before and after each review (paths under `.ralphex/` are skipped). If anything changed, ralphex logs a warning that names the changed paths, discards that round's findings and ends the review. It restores only the plan file from stored bytes. It does not revert code files or commits. Known limit: the guard cannot tell a reviewer edit from your own edit or commit in another terminal during a review, so such an edit also discards that round's findings.
@@ -878,7 +876,6 @@ ralphex --serve --port=3000 docs/plans/feature.md
 | `--preserve-anthropic-api-key` | Pass `ANTHROPIC_API_KEY` through to claude (for users authenticating Claude Code via API key rather than OAuth/keychain) | false |
 | `--plan` | Create plan interactively (provide description) | - |
 | `--plan-review` | Review an existing plan file (positional argument, or pick with the selector) and apply chosen findings; no branch or worktree is created | false |
-| `--plan-reviewer` | Preselect the plan reviewer: `ask`, `external`, `same` or `none`. Overrides `plan_reviewer`. `none` is an error with `--plan-review` | config/ask |
 | `-s, --serve` | Start web dashboard for real-time streaming | false |
 | `-p, --port` | Web dashboard port (used with `--serve`) | 8080 |
 | `-w, --watch` | Directories to watch for progress files (repeatable) | - |
@@ -1119,7 +1116,6 @@ Provider-related CLI flags (`--claude-command`, `--claude-args`, `--external-rev
 | `claude_command` | Claude CLI command | `claude` |
 | `claude_args` | Claude CLI arguments | `--dangerously-skip-permissions --output-format stream-json --verbose` |
 | `executor` | Executor for plan creation, task, review, and finalize phases. `""` (default) uses Claude Code; `codex` routes the full pipeline through the codex CLI and skips the external review phase. CLI flag `--codex` takes precedence | empty |
-| `plan_reviewer` | Plan review reviewer: `ask` (default, offers External reviewer first), `external`, `same` or `none`. CLI flag `--plan-reviewer` takes precedence | `ask` |
 | `pass_claude_md` | When `executor = codex`, pass project `CLAUDE.md` to codex as `AGENTS.md` via `-c project_doc_fallback_filenames=["CLAUDE.md"]`. CLI flag `--pass-claude-md` takes precedence | `false` |
 | `plan_model` | Model for plan creation as `model[:effort]` (e.g., `opus`, `opus:high`, `:medium`). Falls back to `task_model` if empty. Same syntax and wrapper behavior as `task_model`. Under `--codex`, selects the codex plan-creation model/effort instead (see *Model selection under `--codex`*) | empty |
 | `task_model` | Model for task execution as `model[:effort]` (e.g., `opus`, `opus:high`, `:medium`). Effort: `low`, `medium`, `high`, `xhigh`, `max`. Appended as `--model <m>` and/or `--effort <e>` to `claude_command`; custom wrappers may ignore or implement the flags. Under `--codex`, selects the codex task-phase model/effort instead (see *Model selection under `--codex`*) | empty |

@@ -1524,7 +1524,7 @@ func TestConfig_JSONShape(t *testing.T) {
 	wantKeys := []string{
 		"claude_command", "claude_args", "plan_model", "task_model", "review_model",
 		"codex_enabled", "codex_command", "codex_model", "codex_reasoning_effort",
-		"codex_timeout_ms", "codex_sandbox", "external_review_tool", "custom_review_script", "plan_reviewer",
+		"codex_timeout_ms", "codex_sandbox", "external_review_tool", "custom_review_script",
 		"iteration_delay_ms", "task_retry_count", "max_iterations", "max_external_iterations",
 		"review_patience", "finalize_enabled", "preserve_anthropic_api_key", "executor",
 		"pass_claude_md", "move_plan_on_completion", "worktree_enabled", "plans_dir",
@@ -1550,28 +1550,4 @@ func TestConfig_JSONShape(t *testing.T) {
 		_, present := got[absent]
 		assert.False(t, present, "unexpected json key %q present", absent)
 	}
-}
-
-func TestLoad_PlanReviewer(t *testing.T) {
-	t.Run("default is ask", func(t *testing.T) {
-		cfg, err := Load(t.TempDir())
-		require.NoError(t, err)
-		assert.Equal(t, "ask", cfg.PlanReviewer)
-	})
-
-	t.Run("global config value", func(t *testing.T) {
-		dir := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "config"), []byte("plan_reviewer = same"), 0o600))
-		cfg, err := Load(dir)
-		require.NoError(t, err)
-		assert.Equal(t, "same", cfg.PlanReviewer)
-	})
-
-	t.Run("invalid value is an error", func(t *testing.T) {
-		dir := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "config"), []byte("plan_reviewer = nope"), 0o600))
-		_, err := Load(dir)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "invalid plan_reviewer")
-	})
 }

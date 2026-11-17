@@ -6,13 +6,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/svtlv/ralphex/pkg/config"
 	"github.com/svtlv/ralphex/pkg/executor"
 	"github.com/svtlv/ralphex/pkg/status"
 )
 
 const (
-	// maxPlanReviewRounds caps the review loop so a preselected reviewer cannot run forever.
+	// maxPlanReviewRounds caps the review loop so repeated review and revision rounds cannot run forever.
 	maxPlanReviewRounds = 5
 	// maxFindingSelectionAttempts is the number of times the findings question is asked
 	// (the first ask plus two re-asks) before an invalid answer is treated as "none".
@@ -94,33 +93,14 @@ func (p *PlanReviewPhase) Run(ctx context.Context, req PlanReviewRequest) error 
 
 	p.setPhase()
 
-	mode := p.reviewerMode()
-	if mode == config.PlanReviewerNone {
-		p.log.Print("plan review disabled, skipping...")
-		return nil
-	}
-
-	preselected := ""
-	if mode != config.PlanReviewerAsk {
-		choice, ok := p.preselectedReviewer(mode)
-		if !ok {
-			return nil
-		}
-		preselected = choice
-	}
-
 	for round := 1; round <= maxPlanReviewRounds; round++ {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("plan review: %w", err)
 		}
 
-		reviewer := preselected
-		if reviewer == "" {
-			choice, err := p.askReviewer(ctx)
-			if err != nil {
-				return err
-			}
-			reviewer = choice
+		reviewer, err := p.askReviewer(ctx)
+		if err != nil {
+			return err
 		}
 		if reviewer == reviewerOptionSkip {
 			p.log.Print("plan review skipped")
@@ -146,18 +126,6 @@ func (p *PlanReviewPhase) setPhase() {
 	}
 }
 
-// reviewerMode returns the normalized plan_reviewer setting; empty or unknown values mean ask.
-func (p *PlanReviewPhase) reviewerMode() string {
-	if p.cfg.AppConfig == nil {
-		return config.PlanReviewerAsk
-	}
-	mode, err := config.NormalizePlanReviewer(p.cfg.AppConfig.PlanReviewer)
-	if err != nil {
-		return config.PlanReviewerAsk
-	}
-	return mode
-}
-
 // externalTool returns the external review tool (codex or custom) when one is configured and its
 // executor exists, or "" when External reviewer is not available.
 func (p *PlanReviewPhase) externalTool() string {
@@ -178,23 +146,6 @@ func (p *PlanReviewPhase) externalTool() string {
 		}
 	}
 	return ""
-}
-
-// preselectedReviewer maps a non-ask plan_reviewer value to a reviewer option. it logs a warning and
-// returns false when the chosen reviewer is unavailable.
-func (p *PlanReviewPhase) preselectedReviewer(mode string) (string, bool) {
-	if mode == config.PlanReviewerSame {
-		return reviewerOptionSame, true
-	}
-	if p.externalTool() == "" {
-		if p.cfg.isCodexExecutor() {
-			p.log.Print("warning: plan_reviewer = external is not available with the codex executor, skipping plan review")
-		} else {
-			p.log.Print("warning: plan_reviewer = external but no external review tool is configured, skipping plan review")
-		}
-		return "", false
-	}
-	return reviewerOptionExternal, true
 }
 
 func (p *PlanReviewPhase) reviewerOptions() []string {

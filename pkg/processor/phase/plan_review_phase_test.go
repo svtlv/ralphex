@@ -85,21 +85,23 @@ type planReviewEnv struct {
 	holder   *status.PhaseHolder
 	policy   *testPolicy
 	answers  []string
+	// reviewer, when set, answers every reviewer question; answers then feeds only the findings question
+	reviewer string
 }
 
 // newPlanReviewEnv builds a phase fixture: a temp repo with a plan file and mocked collaborators.
+// reviewer is the answer to every reviewer question; "" takes reviewer answers from e.answers too.
 // planner and external executors return no output until a test sets RunFunc.
-func newPlanReviewEnv(t *testing.T, mode string) *planReviewEnv {
+func newPlanReviewEnv(t *testing.T, reviewer string) *planReviewEnv {
 	t.Helper()
 	reader, planFile := guardEnv(t)
 	events := &eventLog{}
 	appCfg := testAppConfig(t)
-	appCfg.PlanReviewer = mode
 	appCfg.ExternalReviewTool = "codex"
 
 	e := &planReviewEnv{
 		t: t, reader: reader, planFile: planFile, events: events,
-		planner: &executorMock{}, external: &executorMock{}, holder: &status.PhaseHolder{},
+		planner: &executorMock{}, external: &executorMock{}, holder: &status.PhaseHolder{}, reviewer: reviewer,
 		cfg: Config{CodexEnabled: true, ExternalReviewToolSet: true, AppConfig: appCfg},
 	}
 	e.log = &mocks.PlanReviewLoggerMock{
@@ -121,7 +123,10 @@ func newPlanReviewEnv(t *testing.T, mode string) *planReviewEnv {
 			return "revision prompt " + findings
 		},
 	}
-	e.input = &inputCollectorMock{AskQuestionFunc: func(_ context.Context, _ string, _ []string) (string, error) {
+	e.input = &inputCollectorMock{AskQuestionFunc: func(_ context.Context, question string, _ []string) (string, error) {
+		if question == planReviewerQuestion && e.reviewer != "" {
+			return e.reviewer, nil
+		}
 		if len(e.answers) == 0 {
 			return "", errors.New("no more mock answers")
 		}
@@ -192,6 +197,17 @@ func fixedResults(results ...executor.Result) func(context.Context, string) exec
 	}
 }
 
+// findingsCalls returns only the findings question calls, leaving out the reviewer question.
+func findingsCalls(m *inputCollectorMock) []string {
+	out := []string{}
+	for _, c := range m.AskQuestionCalls() {
+		if c.Question == findingsQuestion {
+			out = append(out, c.Question)
+		}
+	}
+	return out
+}
+
 func questionTexts(m *inputCollectorMock) []string {
 	calls := m.AskQuestionCalls()
 	out := make([]string, 0, len(calls))
@@ -202,7 +218,7 @@ func questionTexts(m *inputCollectorMock) []string {
 }
 
 func TestPlanReviewPhase_Run_AskExternalApplyThenSkip(t *testing.T) {
-	e := newPlanReviewEnv(t, "ask")
+	e := newPlanReviewEnv(t, "")
 	e.answers = []string{reviewerOptionExternal, findingsOptionAll, reviewerOptionSkip}
 	e.external.RunFunc = fixedResults(executor.Result{Output: findingsOutput})
 	e.planner.RunFunc = fixedResults(executor.Result{Output: planReadyRes, Signal: status.PlanReady})
@@ -221,7 +237,7 @@ func TestPlanReviewPhase_Run_AskExternalApplyThenSkip(t *testing.T) {
 }
 
 func TestPlanReviewPhase_Run_SameAgentReviewer(t *testing.T) {
-	e := newPlanReviewEnv(t, "ask")
+	e := newPlanReviewEnv(t, "")
 	e.answers = []string{reviewerOptionSame, findingsOptionNone}
 	e.planner.RunFunc = fixedResults(executor.Result{Output: findingsOutput})
 
@@ -234,7 +250,7 @@ func TestPlanReviewPhase_Run_SameAgentReviewer(t *testing.T) {
 }
 
 func TestPlanReviewPhase_Run_CustomReviewerGetsPromptFile(t *testing.T) {
-	e := newPlanReviewEnv(t, "external")
+	e := newPlanReviewEnv(t, reviewerOptionExternal)
 	e.withCustom(findingsOutput)
 	e.answers = []string{findingsOptionNone}
 
@@ -245,64 +261,29 @@ func TestPlanReviewPhase_Run_CustomReviewerGetsPromptFile(t *testing.T) {
 	assert.Contains(t, e.runner.promptText, "review prompt "+e.planFile)
 	assert.Empty(t, e.external.RunCalls())
 	assert.Empty(t, e.planner.RunCalls())
-	assert.Equal(t, []string{findingsQuestion}, questionTexts(e.input), "preselected reviewer asks no reviewer question")
-}
-
-func TestPlanReviewPhase_Run_PreselectedModes(t *testing.T) {
-	tests := []struct {
-		name         string
-		mode         string
-		wantExternal int
-		wantPlanner  int
-		wantPrints   string
-	}{
-		{name: "external", mode: "external", wantExternal: 1},
-		{name: "same", mode: "same", wantPlanner: 1},
-		{name: "none", mode: "none", wantPrints: "print: plan review disabled"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			e := newPlanReviewEnv(t, tc.mode)
-			e.external.RunFunc = fixedResults(executor.Result{Output: noIssuesSentinel})
-			e.planner.RunFunc = fixedResults(executor.Result{Output: noIssuesSentinel})
-
-			require.NoError(t, e.run(t.Context()))
-
-			assert.Len(t, e.external.RunCalls(), tc.wantExternal)
-			assert.Len(t, e.planner.RunCalls(), tc.wantPlanner)
-			assert.Empty(t, e.input.AskQuestionCalls(), "preselected mode asks no reviewer question")
-			if tc.wantPrints != "" {
-				assert.True(t, e.events.has(tc.wantPrints, ""))
-			}
-		})
-	}
+	assert.Equal(t, []string{planReviewerQuestion, findingsQuestion}, questionTexts(e.input), "the reviewer question is always asked")
 }
 
 func TestPlanReviewPhase_Run_UnavailableExternal(t *testing.T) {
 	tests := []struct {
 		name  string
 		setup func(e *planReviewEnv)
-		want  string
 	}{
 		{
 			name:  "tool none",
 			setup: func(e *planReviewEnv) { e.cfg.AppConfig.ExternalReviewTool = "none" },
-			want:  "no external review tool is configured",
 		},
 		{
 			name:  "codex enabled but no executor",
 			setup: func(e *planReviewEnv) { e.external = nil },
-			want:  "no external review tool is configured",
 		},
 		{
 			name:  "explicit codex tool but codex binary missing",
 			setup: func(e *planReviewEnv) { e.cfg.CodexEnabled = false },
-			want:  "no external review tool is configured",
 		},
 		{
 			name:  "custom tool without script",
 			setup: func(e *planReviewEnv) { e.cfg.AppConfig.ExternalReviewTool = "custom" },
-			want:  "no external review tool is configured",
 		},
 		{
 			name: "codex executor skips external",
@@ -310,25 +291,26 @@ func TestPlanReviewPhase_Run_UnavailableExternal(t *testing.T) {
 				e.cfg.AppConfig.Executor = config.ExecutorCodex
 				e.cfg.AppConfig.ExternalReviewTool = "none"
 			},
-			want: "codex executor",
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			e := newPlanReviewEnv(t, "external")
+			e := newPlanReviewEnv(t, "")
 			tc.setup(e)
+			e.answers = []string{reviewerOptionSkip}
 
 			require.NoError(t, e.run(t.Context()))
 
-			assert.True(t, e.events.has("print: warning: plan_reviewer = external", tc.want), e.events.all())
+			calls := e.input.AskQuestionCalls()
+			require.Len(t, calls, 1)
+			assert.Equal(t, []string{reviewerOptionSame, reviewerOptionSkip}, calls[0].Options, "External reviewer must not be offered")
 			assert.Empty(t, e.planner.RunCalls())
-			assert.Empty(t, e.input.AskQuestionCalls())
 		})
 	}
 }
 
 func TestPlanReviewPhase_Run_AskHidesUnavailableExternal(t *testing.T) {
-	e := newPlanReviewEnv(t, "ask")
+	e := newPlanReviewEnv(t, "")
 	e.cfg.AppConfig.ExternalReviewTool = "none"
 	e.answers = []string{reviewerOptionSkip}
 
@@ -340,7 +322,7 @@ func TestPlanReviewPhase_Run_AskHidesUnavailableExternal(t *testing.T) {
 }
 
 func TestPlanReviewPhase_Run_AskHidesExternalWhenCodexBinaryMissing(t *testing.T) {
-	e := newPlanReviewEnv(t, "ask")
+	e := newPlanReviewEnv(t, "")
 	e.cfg.CodexEnabled = false // the factory clears it when the codex binary is not found
 	e.answers = []string{reviewerOptionSkip}
 
@@ -352,7 +334,7 @@ func TestPlanReviewPhase_Run_AskHidesExternalWhenCodexBinaryMissing(t *testing.T
 }
 
 func TestPlanReviewPhase_Run_AskUnknownAnswerSkips(t *testing.T) {
-	e := newPlanReviewEnv(t, "ask")
+	e := newPlanReviewEnv(t, "")
 	e.answers = []string{"banana"}
 
 	require.NoError(t, e.run(t.Context()))
@@ -363,25 +345,25 @@ func TestPlanReviewPhase_Run_AskUnknownAnswerSkips(t *testing.T) {
 
 func TestPlanReviewPhase_Run_InputErrors(t *testing.T) {
 	t.Run("reviewer question error", func(t *testing.T) {
-		e := newPlanReviewEnv(t, "ask")
+		e := newPlanReviewEnv(t, "")
 		err := e.run(t.Context())
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "collect reviewer choice")
 	})
 	t.Run("findings question error", func(t *testing.T) {
-		e := newPlanReviewEnv(t, "same")
+		e := newPlanReviewEnv(t, reviewerOptionSame)
 		e.planner.RunFunc = fixedResults(executor.Result{Output: findingsOutput})
 		err := e.run(t.Context())
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "collect findings selection")
 	})
 	t.Run("missing plan file argument", func(t *testing.T) {
-		e := newPlanReviewEnv(t, "same")
+		e := newPlanReviewEnv(t, reviewerOptionSame)
 		err := e.phase().Run(t.Context(), PlanReviewRequest{})
 		require.Error(t, err)
 	})
 	t.Run("missing input collector", func(t *testing.T) {
-		e := newPlanReviewEnv(t, "same")
+		e := newPlanReviewEnv(t, reviewerOptionSame)
 		p := e.phase()
 		p.deps = &Deps{}
 		require.Error(t, p.Run(t.Context(), PlanReviewRequest{PlanFile: e.planFile}))
@@ -401,20 +383,20 @@ func TestPlanReviewPhase_Run_ReviewerFailuresDoNotFailRun(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			e := newPlanReviewEnv(t, "same")
+			e := newPlanReviewEnv(t, reviewerOptionSame)
 			e.policy = newScriptedTestPolicy(&printAdapter{log: e.events}, tc.result)
 
 			require.NoError(t, e.run(t.Context()))
 
 			assert.True(t, e.events.has("print: warning:", tc.want), e.events.all())
-			assert.Empty(t, e.input.AskQuestionCalls())
+			assert.Empty(t, findingsCalls(e.input))
 		})
 	}
 }
 
 func TestPlanReviewPhase_Run_PatternErrorIsNotSwallowed(t *testing.T) {
 	t.Run("reviewer", func(t *testing.T) {
-		e := newPlanReviewEnv(t, "same")
+		e := newPlanReviewEnv(t, reviewerOptionSame)
 		e.planner.RunFunc = fixedResults(executor.Result{Error: &executor.LimitPatternError{Pattern: "rate limit", HelpCmd: "claude /usage"}})
 
 		err := e.run(t.Context())
@@ -425,7 +407,7 @@ func TestPlanReviewPhase_Run_PatternErrorIsNotSwallowed(t *testing.T) {
 		assert.True(t, e.events.has("print: error: detected", "rate limit"), "policy handler must log the match")
 	})
 	t.Run("custom reviewer pattern error", func(t *testing.T) {
-		e := newPlanReviewEnv(t, "external")
+		e := newPlanReviewEnv(t, reviewerOptionExternal)
 		e.withCustom("boom")
 		e.runner.output = "boom"
 		e.custom.SetRunner(&failingRunner{out: "boom happened"})
@@ -436,7 +418,7 @@ func TestPlanReviewPhase_Run_PatternErrorIsNotSwallowed(t *testing.T) {
 		require.ErrorAs(t, err, &patternErr)
 	})
 	t.Run("revision session", func(t *testing.T) {
-		e := newPlanReviewEnv(t, "same")
+		e := newPlanReviewEnv(t, reviewerOptionSame)
 		e.answers = []string{findingsOptionAll}
 		e.planner.RunFunc = fixedResults(
 			executor.Result{Output: findingsOutput},
@@ -459,7 +441,7 @@ func (f *failingRunner) Run(_ context.Context, _, _ string) (io.Reader, func() e
 
 func TestPlanReviewPhase_Run_ContextCancel(t *testing.T) {
 	t.Run("before first round", func(t *testing.T) {
-		e := newPlanReviewEnv(t, "same")
+		e := newPlanReviewEnv(t, reviewerOptionSame)
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 
@@ -469,7 +451,7 @@ func TestPlanReviewPhase_Run_ContextCancel(t *testing.T) {
 		assert.Empty(t, e.planner.RunCalls())
 	})
 	t.Run("during reviewer call", func(t *testing.T) {
-		e := newPlanReviewEnv(t, "same")
+		e := newPlanReviewEnv(t, reviewerOptionSame)
 		ctx, cancel := context.WithCancel(t.Context())
 		e.planner.RunFunc = func(context.Context, string) executor.Result {
 			cancel()
@@ -484,28 +466,28 @@ func TestPlanReviewPhase_Run_ContextCancel(t *testing.T) {
 
 func TestPlanReviewPhase_Run_NoIssuesAndUnparseable(t *testing.T) {
 	t.Run("no issues", func(t *testing.T) {
-		e := newPlanReviewEnv(t, "same")
+		e := newPlanReviewEnv(t, reviewerOptionSame)
 		e.planner.RunFunc = fixedResults(executor.Result{Output: "looks fine\nNO ISSUES FOUND"})
 
 		require.NoError(t, e.run(t.Context()))
 
 		assert.True(t, e.events.has("print: plan review found no issues", ""))
-		assert.Empty(t, e.input.AskQuestionCalls())
+		assert.Empty(t, findingsCalls(e.input))
 	})
 	t.Run("unparseable output is logged raw with a warning", func(t *testing.T) {
-		e := newPlanReviewEnv(t, "same")
+		e := newPlanReviewEnv(t, reviewerOptionSame)
 		e.planner.RunFunc = fixedResults(executor.Result{Output: "I think the plan is mostly fine."})
 
 		require.NoError(t, e.run(t.Context()))
 
 		assert.True(t, e.events.has("print: warning: plan review output has no findings", ""))
 		assert.True(t, e.events.has("aligned:", "I think the plan is mostly fine."))
-		assert.Empty(t, e.input.AskQuestionCalls())
+		assert.Empty(t, findingsCalls(e.input))
 	})
 }
 
 func TestPlanReviewPhase_Run_ReviewerOutputNotLoggedTwice(t *testing.T) {
-	e := newPlanReviewEnv(t, "same")
+	e := newPlanReviewEnv(t, reviewerOptionSame)
 	e.answers = []string{findingsOptionNone}
 	e.planner.RunFunc = fixedResults(executor.Result{Output: "intro prose\n" + findingsOutput + "\n" + findingsOutput})
 
@@ -518,7 +500,7 @@ func TestPlanReviewPhase_Run_ReviewerOutputNotLoggedTwice(t *testing.T) {
 }
 
 func TestPlanReviewPhase_Run_SectionPerRound(t *testing.T) {
-	e := newPlanReviewEnv(t, "same")
+	e := newPlanReviewEnv(t, reviewerOptionSame)
 	e.answers = []string{findingsOptionAll, findingsOptionAll}
 	e.planner.RunFunc = fixedResults(
 		executor.Result{Output: findingsOutput},
@@ -538,7 +520,7 @@ func TestPlanReviewPhase_Run_SectionPerRound(t *testing.T) {
 }
 
 func TestPlanReviewPhase_Run_RoundCap(t *testing.T) {
-	e := newPlanReviewEnv(t, "same")
+	e := newPlanReviewEnv(t, reviewerOptionSame)
 	for range maxPlanReviewRounds {
 		e.answers = append(e.answers, findingsOptionAll)
 	}
@@ -557,7 +539,7 @@ func TestPlanReviewPhase_Run_RoundCap(t *testing.T) {
 
 func TestPlanReviewPhase_Run_FindingSelection(t *testing.T) {
 	t.Run("subset keeps original numbers", func(t *testing.T) {
-		e := newPlanReviewEnv(t, "ask")
+		e := newPlanReviewEnv(t, "")
 		e.answers = []string{reviewerOptionSame, "2", reviewerOptionSkip}
 		e.planner.RunFunc = fixedResults(
 			executor.Result{Output: findingsOutput},
@@ -570,7 +552,7 @@ func TestPlanReviewPhase_Run_FindingSelection(t *testing.T) {
 		assert.Equal(t, "revision prompt 2. MINOR: Overview - typo", e.planner.RunCalls()[1].Prompt)
 	})
 	t.Run("invalid answer is re-asked then accepted", func(t *testing.T) {
-		e := newPlanReviewEnv(t, "same")
+		e := newPlanReviewEnv(t, reviewerOptionSame)
 		e.answers = []string{"banana", "9", findingsOptionNone}
 		e.planner.RunFunc = fixedResults(executor.Result{Output: findingsOutput})
 
@@ -581,7 +563,7 @@ func TestPlanReviewPhase_Run_FindingSelection(t *testing.T) {
 		assert.Len(t, e.planner.RunCalls(), 1)
 	})
 	t.Run("three invalid answers count as none", func(t *testing.T) {
-		e := newPlanReviewEnv(t, "same")
+		e := newPlanReviewEnv(t, reviewerOptionSame)
 		e.answers = []string{"banana", "9", "x y"}
 		e.planner.RunFunc = fixedResults(executor.Result{Output: findingsOutput})
 
@@ -606,7 +588,7 @@ func TestPlanReviewPhase_Run_RevisionFailures(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			e := newPlanReviewEnv(t, "same")
+			e := newPlanReviewEnv(t, reviewerOptionSame)
 			e.answers = []string{findingsOptionAll}
 			e.planner.RunFunc = fixedResults(executor.Result{Output: findingsOutput})
 			e.policy = newScriptedTestPolicy(&printAdapter{log: e.events},
@@ -659,7 +641,7 @@ func TestPlanReviewPhase_Run_GuardRepoChanges(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			e := newPlanReviewEnv(t, "same")
+			e := newPlanReviewEnv(t, reviewerOptionSame)
 			e.answers = []string{findingsOptionAll}
 			e.planner.RunFunc = func(context.Context, string) executor.Result {
 				tc.mutate(e)
@@ -672,7 +654,7 @@ func TestPlanReviewPhase_Run_GuardRepoChanges(t *testing.T) {
 				assert.True(t, e.events.has("print: warning:", w) || e.events.has("print: warning: plan review is read-only", w), "want %q in %v", w, e.events.all())
 			}
 			assert.True(t, e.events.has("print: warning: findings of this review round are discarded", ""))
-			assert.Empty(t, e.input.AskQuestionCalls(), "findings of a tripped round are never shown")
+			assert.Empty(t, findingsCalls(e.input), "findings of a tripped round are never shown")
 			assert.Len(t, e.planner.RunCalls(), 1, "no revision session runs")
 			if tc.wantPlanBack {
 				assert.Equal(t, "# plan\n", e.readPlan())
@@ -682,7 +664,7 @@ func TestPlanReviewPhase_Run_GuardRepoChanges(t *testing.T) {
 }
 
 func TestPlanReviewPhase_Run_GuardPlanPathNotListedTwice(t *testing.T) {
-	e := newPlanReviewEnv(t, "same")
+	e := newPlanReviewEnv(t, reviewerOptionSame)
 	e.planner.RunFunc = func(context.Context, string) executor.Result {
 		e.tamperPlan()
 		writeGuardFile(e.t, e.reader.root, "main.go", "package main")
@@ -697,7 +679,7 @@ func TestPlanReviewPhase_Run_GuardPlanPathNotListedTwice(t *testing.T) {
 }
 
 func TestPlanReviewPhase_Run_GuardCatchesCodeEditWhenReviewerDeletesPlan(t *testing.T) {
-	e := newPlanReviewEnv(t, "same")
+	e := newPlanReviewEnv(t, reviewerOptionSame)
 	e.planner.RunFunc = func(context.Context, string) executor.Result {
 		require.NoError(t, os.Remove(e.planFile))
 		writeGuardFile(e.t, e.reader.root, "main.go", "package main")
@@ -710,11 +692,11 @@ func TestPlanReviewPhase_Run_GuardCatchesCodeEditWhenReviewerDeletesPlan(t *test
 	assert.Equal(t, "# plan\n", e.readPlan(), "deleted plan is restored")
 	assert.Equal(t, 1, e.events.count("print: warning: plan review is read-only", "main.go"), "code edit is still reported")
 	assert.Equal(t, 0, e.events.count("print: warning: repo state unreadable", ""), "repo state was readable")
-	assert.Empty(t, e.input.AskQuestionCalls(), "findings of a tripped round are never shown")
+	assert.Empty(t, findingsCalls(e.input), "findings of a tripped round are never shown")
 }
 
 func TestPlanReviewPhase_Run_GuardIgnoresRalphexDir(t *testing.T) {
-	e := newPlanReviewEnv(t, "same")
+	e := newPlanReviewEnv(t, reviewerOptionSame)
 	e.answers = []string{findingsOptionNone}
 	e.planner.RunFunc = func(context.Context, string) executor.Result {
 		writeGuardFile(e.t, e.reader.root, ".ralphex/progress/progress-x.txt", "log")
@@ -724,12 +706,12 @@ func TestPlanReviewPhase_Run_GuardIgnoresRalphexDir(t *testing.T) {
 
 	require.NoError(t, e.run(t.Context()))
 
-	assert.Len(t, e.input.AskQuestionCalls(), 1, "a .ralphex change does not trip the guard")
+	assert.Len(t, findingsCalls(e.input), 1, "a .ralphex change does not trip the guard")
 }
 
 func TestPlanReviewPhase_Run_GuardFallsBackToPlanBytesOnly(t *testing.T) {
 	t.Run("reader error before review", func(t *testing.T) {
-		e := newPlanReviewEnv(t, "same")
+		e := newPlanReviewEnv(t, reviewerOptionSame)
 		e.reader.headErr = errors.New("not a git repository")
 		e.answers = []string{findingsOptionNone}
 		e.planner.RunFunc = fixedResults(executor.Result{Output: findingsOutput})
@@ -737,10 +719,10 @@ func TestPlanReviewPhase_Run_GuardFallsBackToPlanBytesOnly(t *testing.T) {
 		require.NoError(t, e.run(t.Context()))
 
 		assert.True(t, e.events.has("print: warning: repo state unavailable", "not a git repository"))
-		assert.Len(t, e.input.AskQuestionCalls(), 1, "review still runs")
+		assert.Len(t, findingsCalls(e.input), 1, "review still runs")
 	})
 	t.Run("plan edit is still caught without repo state", func(t *testing.T) {
-		e := newPlanReviewEnv(t, "same")
+		e := newPlanReviewEnv(t, reviewerOptionSame)
 		e.reader.headErr = errors.New("not a git repository")
 		e.planner.RunFunc = func(context.Context, string) executor.Result {
 			e.tamperPlan()
@@ -750,10 +732,10 @@ func TestPlanReviewPhase_Run_GuardFallsBackToPlanBytesOnly(t *testing.T) {
 		require.NoError(t, e.run(t.Context()))
 
 		assert.Equal(t, "# plan\n", e.readPlan())
-		assert.Empty(t, e.input.AskQuestionCalls())
+		assert.Empty(t, findingsCalls(e.input))
 	})
 	t.Run("reader error after review", func(t *testing.T) {
-		e := newPlanReviewEnv(t, "same")
+		e := newPlanReviewEnv(t, reviewerOptionSame)
 		e.answers = []string{findingsOptionNone}
 		e.planner.RunFunc = func(context.Context, string) executor.Result {
 			e.reader.statusErr = errors.New("git died")
@@ -763,10 +745,10 @@ func TestPlanReviewPhase_Run_GuardFallsBackToPlanBytesOnly(t *testing.T) {
 		require.NoError(t, e.run(t.Context()))
 
 		assert.True(t, e.events.has("print: warning: repo state unreadable after plan review", "git died"))
-		assert.Len(t, e.input.AskQuestionCalls(), 1)
+		assert.Len(t, findingsCalls(e.input), 1)
 	})
 	t.Run("nil reader", func(t *testing.T) {
-		e := newPlanReviewEnv(t, "same")
+		e := newPlanReviewEnv(t, reviewerOptionSame)
 		e.answers = []string{findingsOptionNone}
 		e.planner.RunFunc = fixedResults(executor.Result{Output: findingsOutput})
 		p := e.phase()
@@ -774,10 +756,10 @@ func TestPlanReviewPhase_Run_GuardFallsBackToPlanBytesOnly(t *testing.T) {
 
 		require.NoError(t, p.Run(t.Context(), PlanReviewRequest{PlanFile: e.planFile}))
 
-		assert.Len(t, e.input.AskQuestionCalls(), 1)
+		assert.Len(t, findingsCalls(e.input), 1)
 	})
 	t.Run("plan file missing", func(t *testing.T) {
-		e := newPlanReviewEnv(t, "same")
+		e := newPlanReviewEnv(t, reviewerOptionSame)
 		require.NoError(t, os.Remove(e.planFile))
 
 		require.NoError(t, e.run(t.Context()))
@@ -788,7 +770,7 @@ func TestPlanReviewPhase_Run_GuardFallsBackToPlanBytesOnly(t *testing.T) {
 }
 
 func TestPlanReviewPhase_Run_GuardCoversFailedReviewer(t *testing.T) {
-	e := newPlanReviewEnv(t, "same")
+	e := newPlanReviewEnv(t, reviewerOptionSame)
 	e.planner.RunFunc = func(context.Context, string) executor.Result {
 		e.tamperPlan()
 		return executor.Result{Error: errors.New("exit 1")}
@@ -801,7 +783,7 @@ func TestPlanReviewPhase_Run_GuardCoversFailedReviewer(t *testing.T) {
 
 func TestPlanReviewPhase_Run_ExecutorNameFollowsConfig(t *testing.T) {
 	var names []string
-	e := newPlanReviewEnv(t, "same")
+	e := newPlanReviewEnv(t, reviewerOptionSame)
 	e.cfg.AppConfig.Executor = config.ExecutorCodex
 	e.planner.RunFunc = fixedResults(executor.Result{Output: noIssuesSentinel})
 	e.policy = newScriptedTestPolicy(&printAdapter{log: e.events})
@@ -825,7 +807,7 @@ func (p *nameRecordingPolicy) Run(ctx context.Context, run func(context.Context,
 }
 
 func TestPlanReviewPhase_Run_LogsQuestionsAnswersAndFindings(t *testing.T) {
-	e := newPlanReviewEnv(t, "ask")
+	e := newPlanReviewEnv(t, "")
 	e.answers = []string{reviewerOptionSame, "1,2", reviewerOptionSkip}
 	e.planner.RunFunc = fixedResults(
 		executor.Result{Output: findingsOutput},
@@ -848,13 +830,5 @@ func TestResolveReviewerHelpers(t *testing.T) {
 	t.Run("short hash", func(t *testing.T) {
 		assert.Equal(t, "abcdef12", shortHash("abcdef1234567"))
 		assert.Equal(t, "abc", shortHash("abc"))
-	})
-	t.Run("nil app config means ask", func(t *testing.T) {
-		p := &PlanReviewPhase{}
-		assert.Equal(t, config.PlanReviewerAsk, p.reviewerMode())
-	})
-	t.Run("invalid mode means ask", func(t *testing.T) {
-		p := &PlanReviewPhase{cfg: Config{AppConfig: &config.Config{PlanReviewer: "bogus"}}}
-		assert.Equal(t, config.PlanReviewerAsk, p.reviewerMode())
 	})
 }

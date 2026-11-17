@@ -115,19 +115,6 @@ external_review_tool = codex
 # custom_review_script =
 
 # ------------------------------------------------------------------------------
-# plan review
-# ------------------------------------------------------------------------------
-
-# plan_reviewer: which reviewer checks a plan file after plan creation (--plan)
-# and in the standalone --plan-review mode. CLI flag --plan-reviewer overrides it.
-# ask: ask each time; External reviewer is offered first when available (default)
-# external: use the external review tool (codex or custom script) without asking
-# same: use the same agent that creates plans (read-only) without asking
-# none: skip plan review (not valid with --plan-review)
-# default: ask
-plan_reviewer = ask
-
-# ------------------------------------------------------------------------------
 # finalize step
 # ------------------------------------------------------------------------------
 

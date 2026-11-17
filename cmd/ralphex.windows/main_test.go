@@ -29,6 +29,7 @@ import (
 	"github.com/svtlv/ralphex/pkg/notify"
 	"github.com/svtlv/ralphex/pkg/plan"
 	"github.com/svtlv/ralphex/pkg/processor"
+	"github.com/svtlv/ralphex/pkg/processor/mocks"
 	"github.com/svtlv/ralphex/pkg/progress"
 	"github.com/svtlv/ralphex/pkg/status"
 	"github.com/svtlv/ralphex/pkg/web"
@@ -1019,14 +1020,6 @@ func TestValidateFlags(t *testing.T) {
 		{name: "plan_review_conflicts_with_external_only", opts: opts{PlanReview: true, ExternalOnly: true}, wantErr: true, errMsg: "conflicts with --external-only"},
 		{name: "plan_review_conflicts_with_codex_only", opts: opts{PlanReview: true, CodexOnly: true}, wantErr: true, errMsg: "conflicts with --codex-only"},
 		{name: "plan_review_conflicts_with_tasks_only", opts: opts{PlanReview: true, TasksOnly: true}, wantErr: true, errMsg: "conflicts with --tasks-only"},
-		{name: "plan_reviewer_ask_is_valid", opts: opts{PlanReviewer: "ask"}, wantErr: false},
-		{name: "plan_reviewer_external_is_valid", opts: opts{PlanReviewer: "external"}, wantErr: false},
-		{name: "plan_reviewer_same_is_valid", opts: opts{PlanReviewer: "same"}, wantErr: false},
-		{name: "plan_reviewer_none_is_valid_for_plan_mode", opts: opts{PlanReviewer: "none", PlanDescription: "x"}, wantErr: false},
-		{name: "plan_reviewer_is_case_insensitive", opts: opts{PlanReviewer: "External"}, wantErr: false},
-		{name: "plan_reviewer_invalid", opts: opts{PlanReviewer: "bogus"}, wantErr: true, errMsg: "--plan-reviewer"},
-		{name: "plan_review_with_reviewer_none", opts: opts{PlanReview: true, PlanReviewer: "none"}, wantErr: true, errMsg: "--plan-reviewer=none"},
-		{name: "plan_review_with_reviewer_same", opts: opts{PlanReview: true, PlanReviewer: "same"}, wantErr: false},
 	}
 
 	for _, tc := range tests {
@@ -3616,67 +3609,10 @@ func TestArchivePlanWorktree(t *testing.T) {
 }
 
 func TestPlanReviewFlags(t *testing.T) {
-	t.Run("flags parse", func(t *testing.T) {
-		o := parseTestOpts(t, "--plan-review", "--plan-reviewer=same", "docs/plans/x.md")
-		assert.True(t, o.PlanReview)
-		assert.Equal(t, "same", o.PlanReviewer)
-		assert.Equal(t, "docs/plans/x.md", o.PlanFile)
-		assert.Equal(t, processor.ModePlanReview, determineMode(o))
-	})
-
-	t.Run("cli overrides config", func(t *testing.T) {
-		cfg := &config.Config{PlanReviewer: config.PlanReviewerAsk}
-		o := parseTestOpts(t, "--plan-reviewer=External")
-
-		require.NoError(t, applyCLIOverrides(o, cfg))
-
-		assert.Equal(t, config.PlanReviewerExternal, cfg.PlanReviewer)
-	})
-
-	t.Run("config kept when flag absent", func(t *testing.T) {
-		cfg := &config.Config{PlanReviewer: config.PlanReviewerSame}
-		o := parseTestOpts(t)
-
-		require.NoError(t, applyCLIOverrides(o, cfg))
-
-		assert.Equal(t, config.PlanReviewerSame, cfg.PlanReviewer)
-	})
-
-	t.Run("invalid cli value is an error", func(t *testing.T) {
-		cfg := &config.Config{}
-		o := parseTestOpts(t, "--plan-reviewer=bogus")
-
-		err := applyCLIOverrides(o, cfg)
-
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--plan-reviewer")
-	})
-
-	t.Run("plan-review with config none is rejected", func(t *testing.T) {
-		cfg := &config.Config{PlanReviewer: config.PlanReviewerNone}
-		o := parseTestOpts(t, "--plan-review")
-
-		err := applyCLIOverrides(o, cfg)
-
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "plan_reviewer is none")
-	})
-
-	t.Run("plan-review with cli reviewer overrides config none", func(t *testing.T) {
-		cfg := &config.Config{PlanReviewer: config.PlanReviewerNone}
-		o := parseTestOpts(t, "--plan-review", "--plan-reviewer=same")
-
-		require.NoError(t, applyCLIOverrides(o, cfg))
-
-		assert.Equal(t, config.PlanReviewerSame, cfg.PlanReviewer)
-	})
-
-	t.Run("config none is fine outside plan-review", func(t *testing.T) {
-		cfg := &config.Config{PlanReviewer: config.PlanReviewerNone}
-		o := parseTestOpts(t, "--plan", "add x")
-
-		require.NoError(t, applyCLIOverrides(o, cfg))
-	})
+	o := parseTestOpts(t, "--plan-review", "docs/plans/x.md")
+	assert.True(t, o.PlanReview)
+	assert.Equal(t, "docs/plans/x.md", o.PlanFile)
+	assert.Equal(t, processor.ModePlanReview, determineMode(o))
 }
 
 // planModeFixture is a repo with one plan file, the CWD set to the repo root, and a loaded config.
@@ -3686,7 +3622,7 @@ type planModeFixture struct {
 	req      executePlanRequest
 }
 
-func setupPlanModeFixture(t *testing.T, reviewer string) planModeFixture {
+func setupPlanModeFixture(t *testing.T) planModeFixture {
 	t.Helper()
 	dir := setupTestRepo(t)
 	origDir, err := os.Getwd()
@@ -3701,7 +3637,6 @@ func setupPlanModeFixture(t *testing.T, reviewer string) planModeFixture {
 
 	cfg, err := config.Load(t.TempDir())
 	require.NoError(t, err)
-	cfg.PlanReviewer = reviewer
 	cfg.PlansDir = filepath.Join("docs", "plans")
 
 	gitSvc, err := git.NewService(".", testColors().Info())
@@ -3735,6 +3670,29 @@ func stubContinue(t *testing.T, answer bool) *string {
 		return nil
 	}
 	return &got
+}
+
+// stubReviewerAnswer replaces the input collector for one test. the plan review question gets
+// reviewer as the answer and the findings question gets "None". it returns a pointer to the
+// options offered by the reviewer question (nil when the question was not asked).
+func stubReviewerAnswer(t *testing.T, reviewer string) *[]string {
+	t.Helper()
+	orig := newInputCollector
+	t.Cleanup(func() { newInputCollector = orig })
+
+	var offered []string
+	newInputCollector = func(bool) processor.InputCollector {
+		return &mocks.InputCollectorMock{
+			AskQuestionFunc: func(_ context.Context, question string, options []string) (string, error) {
+				if question == "Review the plan before implementation?" {
+					offered = options
+					return reviewer, nil
+				}
+				return "None", nil
+			},
+		}
+	}
+	return &offered
 }
 
 func TestPlanProcessorConfig(t *testing.T) {
@@ -3787,7 +3745,8 @@ func TestRunHeaderParams_PlanReview(t *testing.T) {
 
 func TestRunPlanReviewMode(t *testing.T) {
 	t.Run("explicit plan file, no branch or worktree, continue no", func(t *testing.T) {
-		fx := setupPlanModeFixture(t, config.PlanReviewerNone)
+		fx := setupPlanModeFixture(t)
+		stubReviewerAnswer(t, "Skip review")
 		impl := stubContinue(t, false)
 
 		err := runPlanReviewMode(t.Context(), opts{PlanFile: fx.planFile, NoColor: true}, fx.req, plan.NewSelector(fx.req.Config.PlansDir, testColors()))
@@ -3802,7 +3761,8 @@ func TestRunPlanReviewMode(t *testing.T) {
 	})
 
 	t.Run("ensures local gitignore", func(t *testing.T) {
-		fx := setupPlanModeFixture(t, config.PlanReviewerNone)
+		fx := setupPlanModeFixture(t)
+		stubReviewerAnswer(t, "Skip review")
 		stubContinue(t, false)
 
 		err := runPlanReviewMode(t.Context(), opts{PlanFile: fx.planFile, NoColor: true}, fx.req, plan.NewSelector(fx.req.Config.PlansDir, testColors()))
@@ -3813,7 +3773,8 @@ func TestRunPlanReviewMode(t *testing.T) {
 	})
 
 	t.Run("selector picks the only plan", func(t *testing.T) {
-		fx := setupPlanModeFixture(t, config.PlanReviewerNone)
+		fx := setupPlanModeFixture(t)
+		stubReviewerAnswer(t, "Skip review")
 		impl := stubContinue(t, true)
 
 		err := runPlanReviewMode(t.Context(), opts{NoColor: true}, fx.req, plan.NewSelector(fx.req.Config.PlansDir, testColors()))
@@ -3827,7 +3788,8 @@ func TestRunPlanReviewMode(t *testing.T) {
 	})
 
 	t.Run("continue yes calls shared helper with plan path", func(t *testing.T) {
-		fx := setupPlanModeFixture(t, config.PlanReviewerNone)
+		fx := setupPlanModeFixture(t)
+		stubReviewerAnswer(t, "Skip review")
 		impl := stubContinue(t, true)
 
 		err := runPlanReviewMode(t.Context(), opts{PlanFile: fx.planFile, NoColor: true}, fx.req, plan.NewSelector(fx.req.Config.PlansDir, testColors()))
@@ -3838,7 +3800,8 @@ func TestRunPlanReviewMode(t *testing.T) {
 	})
 
 	t.Run("missing plan file is an error", func(t *testing.T) {
-		fx := setupPlanModeFixture(t, config.PlanReviewerNone)
+		fx := setupPlanModeFixture(t)
+		stubReviewerAnswer(t, "Skip review")
 		impl := stubContinue(t, true)
 
 		err := runPlanReviewMode(t.Context(), opts{PlanFile: filepath.Join(fx.dir, "nope.md"), NoColor: true}, fx.req, plan.NewSelector(fx.req.Config.PlansDir, testColors()))
@@ -3849,7 +3812,8 @@ func TestRunPlanReviewMode(t *testing.T) {
 	})
 
 	t.Run("run error is wrapped and the progress log is marked failed", func(t *testing.T) {
-		fx := setupPlanModeFixture(t, config.PlanReviewerNone)
+		fx := setupPlanModeFixture(t)
+		stubReviewerAnswer(t, "Skip review")
 		impl := stubContinue(t, true)
 		// a directory in place of the plan file makes the runner fail reading the plan overview
 		badPlan := filepath.Join(fx.dir, "docs", "plans", "dirplan.md")
@@ -3878,7 +3842,8 @@ func TestRunPlanReviewMode_ExternalReviewer(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell script fake codex")
 	}
-	fx := setupPlanModeFixture(t, config.PlanReviewerExternal)
+	fx := setupPlanModeFixture(t)
+	offered := stubReviewerAnswer(t, "External reviewer")
 	marker := filepath.Join(t.TempDir(), "codex-calls")
 	fx.req.Config.CodexEnabled = true
 	fx.req.Config.CodexCommand = writeFakeCodexReview(t, marker)
@@ -3888,7 +3853,8 @@ func TestRunPlanReviewMode_ExternalReviewer(t *testing.T) {
 	require.NoError(t, err)
 
 	// the external reviewer is only available when CodexEnabled reaches the processor
-	assert.FileExists(t, marker, "preselected external reviewer must run the codex command")
+	assert.FileExists(t, marker, "the chosen external reviewer must run the codex command")
+	assert.Equal(t, []string{"External reviewer", "Same agent", "Skip review"}, *offered, "External reviewer is listed first")
 
 	// the progress file keeps the round section and the review result
 	data, readErr := os.ReadFile(filepath.Join(fx.dir, ".ralphex", "progress", "progress-feature-plan-review.txt"))
@@ -3901,7 +3867,8 @@ func TestRunPlanReviewMode_ProgressKeepsWarningAndRawOutput(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell script fake codex")
 	}
-	fx := setupPlanModeFixture(t, config.PlanReviewerExternal)
+	fx := setupPlanModeFixture(t)
+	stubReviewerAnswer(t, "External reviewer")
 	fx.req.Config.CodexEnabled = true
 	fake := filepath.Join(t.TempDir(), "fake-codex")
 	writeExecutable(t, fake, "#!/bin/sh\necho 'the plan looks odd but has no list'\n")
@@ -3921,7 +3888,8 @@ func TestRunPlanReviewMode_CodexExecutorHidesExternalReviewer(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell script fake codex")
 	}
-	fx := setupPlanModeFixture(t, config.PlanReviewerExternal)
+	fx := setupPlanModeFixture(t)
+	offered := stubReviewerAnswer(t, "External reviewer")
 	marker := filepath.Join(t.TempDir(), "codex-calls")
 	fx.req.Config.Executor = config.ExecutorCodex
 	fx.req.Config.CodexEnabled = true
@@ -3932,16 +3900,15 @@ func TestRunPlanReviewMode_CodexExecutorHidesExternalReviewer(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.NoFileExists(t, marker, "the external reviewer is not available under the codex executor")
-	data, readErr := os.ReadFile(filepath.Join(fx.dir, ".ralphex", "progress", "progress-feature-plan-review.txt"))
-	require.NoError(t, readErr)
-	assert.Contains(t, string(data), "not available with the codex executor")
+	assert.Equal(t, []string{"Same agent", "Skip review"}, *offered, "the codex executor must not offer External reviewer")
 }
 
 func TestRunPlanMode_ExternalReviewerAndContinue(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell script fakes")
 	}
-	fx := setupPlanModeFixture(t, config.PlanReviewerExternal)
+	fx := setupPlanModeFixture(t)
+	stubReviewerAnswer(t, "External reviewer")
 	fx.req.Mode = processor.ModePlan
 	marker := filepath.Join(t.TempDir(), "codex-calls")
 	fx.req.Config.CodexEnabled = true
@@ -3978,14 +3945,15 @@ func TestRunRoutesPlanReviewMode(t *testing.T) {
 		t.Skip("shell script fake codex")
 	}
 	skipIfClaudeNotAvailable(t)
-	fx := setupPlanModeFixture(t, config.PlanReviewerNone)
+	fx := setupPlanModeFixture(t)
+	stubReviewerAnswer(t, "External reviewer")
 	impl := stubContinue(t, false)
 	marker := filepath.Join(t.TempDir(), "codex-calls")
 	configDir := t.TempDir()
 	cfgText := "codex_command = " + writeFakeCodexReview(t, marker) + "\n"
 	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte(cfgText), 0o600))
 
-	o := opts{PlanReview: true, PlanReviewer: "external", PlanFile: fx.planFile, NoColor: true, ConfigDir: configDir}
+	o := opts{PlanReview: true, PlanFile: fx.planFile, NoColor: true, ConfigDir: configDir}
 	err := run(t.Context(), o)
 	require.NoError(t, err)
 

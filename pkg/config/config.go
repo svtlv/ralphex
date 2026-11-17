@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/svtlv/ralphex/pkg/notify"
@@ -66,8 +65,6 @@ type Config struct {
 	ExternalReviewTool    string `json:"external_review_tool"` // "codex", "custom", or "none"
 	ExternalReviewToolSet bool   `json:"-"`                    // tracks if external_review_tool was explicitly set in user config (not embedded default)
 	CustomReviewScript    string `json:"custom_review_script"` // path to custom review script
-
-	PlanReviewer string `json:"plan_reviewer"` // plan review preselection: "ask" (default), "external", "same" or "none"
 
 	IterationDelayMs      int  `json:"iteration_delay_ms"`
 	IterationDelayMsSet   bool `json:"-"` // tracks if iteration_delay_ms was explicitly set in config
@@ -309,7 +306,6 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 		ExternalReviewTool:      values.ExternalReviewTool,
 		ExternalReviewToolSet:   values.ExternalReviewToolSet,
 		CustomReviewScript:      values.CustomReviewScript,
-		PlanReviewer:            planReviewerOrDefault(values.PlanReviewer),
 		IterationDelayMs:        values.IterationDelayMs,
 		IterationDelayMsSet:     values.IterationDelayMsSet,
 		TaskRetryCount:          values.TaskRetryCount,
@@ -416,33 +412,4 @@ func (c *Config) CodexExecutorSandbox() string {
 		return "danger-full-access"
 	}
 	return c.CodexSandbox
-}
-
-// plan reviewer values for the plan_reviewer option and the --plan-reviewer flag.
-const (
-	PlanReviewerAsk      = "ask"
-	PlanReviewerExternal = "external"
-	PlanReviewerSame     = "same"
-	PlanReviewerNone     = "none"
-)
-
-// NormalizePlanReviewer validates a plan_reviewer value and returns it lowercased.
-// an empty value means "ask". an unknown value returns an error.
-func NormalizePlanReviewer(v string) (string, error) {
-	norm := strings.ToLower(strings.TrimSpace(v))
-	switch norm {
-	case "":
-		return PlanReviewerAsk, nil
-	case PlanReviewerAsk, PlanReviewerExternal, PlanReviewerSame, PlanReviewerNone:
-		return norm, nil
-	}
-	return "", fmt.Errorf("invalid plan_reviewer %q: must be one of ask, external, same, none", strings.TrimSpace(v))
-}
-
-// planReviewerOrDefault returns v, or "ask" when v is empty.
-func planReviewerOrDefault(v string) string {
-	if v == "" {
-		return PlanReviewerAsk
-	}
-	return v
 }

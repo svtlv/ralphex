@@ -58,7 +58,6 @@ type opts struct {
 	Branch                  string        `long:"branch" description:"override branch name for worktree/branch creation (default: derived from plan filename)"`
 	PlanDescription         string        `long:"plan" description:"create plan interactively (enter plan description)"`
 	PlanReview              bool          `long:"plan-review" description:"review an existing plan file before implementation (plan file as argument, optional)"`
-	PlanReviewer            string        `long:"plan-reviewer" description:"preselect plan reviewer: ask, external, same or none (default: ask)"`
 	Debug                   bool          `short:"d" long:"debug" description:"enable debug logging"`
 	NoColor                 bool          `long:"no-color" description:"disable color output"`
 	Version                 bool          `short:"v" long:"version" description:"print version and exit"`
@@ -1049,34 +1048,25 @@ func validateFlags(o opts) error {
 	return nil
 }
 
-// validatePlanReviewFlags checks --plan-review and --plan-reviewer for conflicts and invalid values.
+// validatePlanReviewFlags checks --plan-review for conflicts with other mode flags.
 func validatePlanReviewFlags(o opts) error {
-	if o.PlanReview {
-		conflicts := []struct {
-			set  bool
-			flag string
-		}{
-			{o.PlanDescription != "", "--plan"},
-			{o.Review, "--review"},
-			{o.ExternalOnly, "--external-only"},
-			{o.CodexOnly, "--codex-only"},
-			{o.TasksOnly, "--tasks-only"},
-		}
-		for _, c := range conflicts {
-			if c.set {
-				return fmt.Errorf("--plan-review flag conflicts with %s; use one or the other", c.flag)
-			}
-		}
-	}
-	if o.PlanReviewer == "" {
+	if !o.PlanReview {
 		return nil
 	}
-	reviewer, err := config.NormalizePlanReviewer(o.PlanReviewer)
-	if err != nil {
-		return fmt.Errorf("--plan-reviewer: %w", err)
+	conflicts := []struct {
+		set  bool
+		flag string
+	}{
+		{o.PlanDescription != "", "--plan"},
+		{o.Review, "--review"},
+		{o.ExternalOnly, "--external-only"},
+		{o.CodexOnly, "--codex-only"},
+		{o.TasksOnly, "--tasks-only"},
 	}
-	if o.PlanReview && reviewer == config.PlanReviewerNone {
-		return errors.New("--plan-review with --plan-reviewer=none has nothing to do; choose ask, external or same")
+	for _, c := range conflicts {
+		if c.set {
+			return fmt.Errorf("--plan-review flag conflicts with %s; use one or the other", c.flag)
+		}
 	}
 	return nil
 }
@@ -1327,7 +1317,7 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	})
 
 	// create input collector
-	collector := input.NewTerminalCollector(o.NoColor)
+	collector := newInputCollector(o.NoColor)
 
 	// record start time for finding the created plan
 	startTime := time.Now()
@@ -1368,6 +1358,12 @@ func runPlanMode(ctx context.Context, o opts, req executePlanRequest, selector *
 	}
 
 	return runImplementation(ctx, o, req, planFile)
+}
+
+// newInputCollector creates the terminal input collector for plan questions. it is a variable so
+// tests can answer the plan review questions without a terminal.
+var newInputCollector = func(noColor bool) processor.InputCollector {
+	return input.NewTerminalCollector(noColor)
 }
 
 // confirmContinue asks whether to continue with plan implementation. it is a variable so tests can
@@ -1532,7 +1528,7 @@ func runPlanReviewMode(ctx context.Context, o opts, req executePlanRequest, sele
 		ProgressPath:  baseLog.Path(),
 	})
 
-	collector := input.NewTerminalCollector(o.NoColor)
+	collector := newInputCollector(o.NoColor)
 	r := newPlanRunner(o, req, processor.Config{
 		PlanFile:      planFile,
 		ProgressPath:  baseLog.Path(),
@@ -1784,26 +1780,7 @@ func applyCLIOverrides(o opts, cfg *config.Config) error {
 	if o.customReviewScriptSet {
 		cfg.CustomReviewScript = o.CustomReviewScript
 	}
-	if err := applyPlanReviewerOverride(o, cfg); err != nil {
-		return err
-	}
 	return applyCodexOverrides(o, cfg, os.Stderr)
-}
-
-// applyPlanReviewerOverride applies --plan-reviewer over the config value and rejects
-// standalone --plan-review when the effective reviewer is "none" (flag or config file).
-func applyPlanReviewerOverride(o opts, cfg *config.Config) error {
-	if o.PlanReviewer != "" {
-		reviewer, err := config.NormalizePlanReviewer(o.PlanReviewer)
-		if err != nil {
-			return fmt.Errorf("--plan-reviewer: %w", err)
-		}
-		cfg.PlanReviewer = reviewer
-	}
-	if o.PlanReview && cfg.PlanReviewer == config.PlanReviewerNone {
-		return errors.New("--plan-review requires a plan reviewer, but plan_reviewer is none (config or --plan-reviewer)")
-	}
-	return nil
 }
 
 // applyCodexOverrides applies --codex / --pass-claude-md CLI flags and resolves config-file precedence.
