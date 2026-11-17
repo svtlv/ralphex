@@ -169,12 +169,12 @@ The read-only rule is enforced twice. The prompt tells the reviewer not to edit.
 
 ### Task 9: Verify acceptance criteria
 
-- [ ] run `make test`; all tests pass
-- [ ] run `make lint`; no issues
-- [ ] run `make fmt`; no diff
-- [ ] run `GOOS=windows GOARCH=amd64 go build ./...`
-- [ ] verify coverage of the new code is 80% or more
-- [ ] verify from the tests that the progress file keeps the review output, the findings, the questions, the answers and the guard warnings for both modes
+- [x] run `make test`; all tests pass (total coverage 89.3%)
+- [x] run `make lint`; no issues
+- [x] run `make fmt`; no diff (note: `goimports` is not installed here, so the make target stops after `gofmt -s -w`; `gofmt -s -l` lists nothing, `make lint` reports 0 issues and the working tree has no format diff)
+- [x] run `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] verify coverage of the new code is 80% or more (phase 93.5%, plan 92.4%, config 89.6%, progress 88.5%, cmd 81.9%; every new plan review function is at or above 80%)
+- [x] verify from the tests that the progress file keeps the review output, the findings, the questions, the answers and the guard warnings for both modes
 
 ### Task 10: Update documentation and delete the backlog item
 

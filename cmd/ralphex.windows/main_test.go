@@ -3889,6 +3889,32 @@ func TestRunPlanReviewMode_ExternalReviewer(t *testing.T) {
 
 	// the external reviewer is only available when CodexEnabled reaches the processor
 	assert.FileExists(t, marker, "preselected external reviewer must run the codex command")
+
+	// the progress file keeps the round section and the review result
+	data, readErr := os.ReadFile(filepath.Join(fx.dir, ".ralphex", "progress", "progress-feature-plan-review.txt"))
+	require.NoError(t, readErr)
+	assert.Contains(t, string(data), "plan review round 1")
+	assert.Contains(t, string(data), "plan review found no issues")
+}
+
+func TestRunPlanReviewMode_ProgressKeepsWarningAndRawOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fake codex")
+	}
+	fx := setupPlanModeFixture(t, config.PlanReviewerExternal)
+	fx.req.Config.CodexEnabled = true
+	fake := filepath.Join(t.TempDir(), "fake-codex")
+	writeExecutable(t, fake, "#!/bin/sh\necho 'the plan looks odd but has no list'\n")
+	fx.req.Config.CodexCommand = fake
+	stubContinue(t, false)
+
+	err := runPlanReviewMode(t.Context(), opts{PlanFile: fx.planFile, NoColor: true}, fx.req, plan.NewSelector(fx.req.Config.PlansDir, testColors()))
+	require.NoError(t, err)
+
+	data, readErr := os.ReadFile(filepath.Join(fx.dir, ".ralphex", "progress", "progress-feature-plan-review.txt"))
+	require.NoError(t, readErr)
+	assert.Contains(t, string(data), "no findings in the expected format")
+	assert.Contains(t, string(data), "the plan looks odd but has no list")
 }
 
 func TestRunPlanMode_ExternalReviewerAndContinue(t *testing.T) {
@@ -3917,6 +3943,14 @@ func TestRunPlanMode_ExternalReviewerAndContinue(t *testing.T) {
 	assert.FileExists(t, marker, "external reviewer must be offered and run in plan mode")
 	assert.NotEmpty(t, *impl, "continue yes must use the shared implementation helper")
 	assert.Equal(t, "created.md", filepath.Base(*impl))
+
+	// the progress file of plan mode keeps the review output too
+	files, globErr := filepath.Glob(filepath.Join(fx.dir, ".ralphex", "progress", "progress-plan-*.txt"))
+	require.NoError(t, globErr)
+	require.NotEmpty(t, files)
+	data, readErr := os.ReadFile(files[0])
+	require.NoError(t, readErr)
+	assert.Contains(t, string(data), "plan review found no issues")
 }
 
 func TestRunRoutesPlanReviewMode(t *testing.T) {
@@ -3953,4 +3987,50 @@ func TestPrintStartupInfo_PlanReview(t *testing.T) {
 
 	assert.Contains(t, out, "starting plan review")
 	assert.Contains(t, out, "feature.md")
+}
+
+func TestContinueWithImplementation(t *testing.T) {
+	setup := func(t *testing.T) (string, string, *git.Service) {
+		t.Helper()
+		dir := setupTestRepo(t)
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
+		require.NoError(t, os.Chdir(dir))
+		t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "cont-plan.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Cont\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/cont-plan.md")
+		runGit(t, dir, "commit", "-m", "add plan")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		return dir, planPath, gitSvc
+	}
+
+	t.Run("worktree_mode_returns_worktree_error", func(t *testing.T) {
+		dir, planPath, gitSvc := setup(t)
+		// pre-create worktree dir to force an "already exists" error
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".ralphex", "worktrees", "cont-plan"), 0o750))
+
+		err := continueWithImplementation(t.Context(), opts{MaxIterations: 1, NoColor: true}, executePlanRequest{
+			GitSvc: gitSvc, Config: &config.Config{WorktreeEnabled: true}, Colors: testColors(),
+			DefaultBranch: "master", WtCleanup: &worktreeCleanupFn{},
+		}, planPath)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "create worktree")
+	})
+
+	t.Run("branch_mode_returns_branch_error", func(t *testing.T) {
+		dir, planPath, gitSvc := setup(t)
+		// a dirty tracked file makes branch creation fail in in-place mode
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# dirty\n"), 0o600))
+
+		err := continueWithImplementation(t.Context(), opts{MaxIterations: 1, NoColor: true}, executePlanRequest{
+			GitSvc: gitSvc, Config: &config.Config{}, Colors: testColors(), DefaultBranch: "master",
+		}, planPath)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "create branch for plan")
+	})
 }
