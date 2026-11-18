@@ -29,6 +29,7 @@ import (
 	"github.com/svtlv/ralphex/pkg/notify"
 	"github.com/svtlv/ralphex/pkg/plan"
 	"github.com/svtlv/ralphex/pkg/processor"
+	"github.com/svtlv/ralphex/pkg/processor/mocks"
 	"github.com/svtlv/ralphex/pkg/progress"
 	"github.com/svtlv/ralphex/pkg/status"
 	"github.com/svtlv/ralphex/pkg/web"
@@ -185,6 +186,8 @@ func TestDetermineMode(t *testing.T) {
 		{name: "plan_takes_precedence_over_codex", opts: opts{PlanDescription: "add caching", CodexOnly: true}, expected: processor.ModePlan},
 		{name: "plan_takes_precedence_over_external", opts: opts{PlanDescription: "add caching", ExternalOnly: true}, expected: processor.ModePlan},
 		{name: "plan_takes_precedence_over_tasks_only", opts: opts{PlanDescription: "add caching", TasksOnly: true}, expected: processor.ModePlan},
+		{name: "plan_review_flag", opts: opts{PlanReview: true}, expected: processor.ModePlanReview},
+		{name: "plan_review_with_plan_file", opts: opts{PlanReview: true, PlanFile: "docs/plans/x.md"}, expected: processor.ModePlanReview},
 	}
 
 	for _, tc := range tests {
@@ -1010,6 +1013,13 @@ func TestValidateFlags(t *testing.T) {
 		{name: "codex_with_external_only_accepted_at_cli_stage", opts: opts{Codex: true, ExternalOnly: true}, wantErr: false},
 		{name: "codex_with_codex_only_accepted_at_cli_stage", opts: opts{Codex: true, CodexOnly: true}, wantErr: false},
 		{name: "pass_claude_md_without_codex_is_valid_at_cli_stage", opts: opts{PassClaudeMd: true}, wantErr: false},
+		{name: "plan_review_alone_is_valid", opts: opts{PlanReview: true}, wantErr: false},
+		{name: "plan_review_with_plan_file_is_valid", opts: opts{PlanReview: true, PlanFile: "docs/plans/x.md"}, wantErr: false},
+		{name: "plan_review_conflicts_with_plan", opts: opts{PlanReview: true, PlanDescription: "x"}, wantErr: true, errMsg: "--plan-review flag conflicts with --plan"},
+		{name: "plan_review_conflicts_with_review", opts: opts{PlanReview: true, Review: true}, wantErr: true, errMsg: "conflicts with --review"},
+		{name: "plan_review_conflicts_with_external_only", opts: opts{PlanReview: true, ExternalOnly: true}, wantErr: true, errMsg: "conflicts with --external-only"},
+		{name: "plan_review_conflicts_with_codex_only", opts: opts{PlanReview: true, CodexOnly: true}, wantErr: true, errMsg: "conflicts with --codex-only"},
+		{name: "plan_review_conflicts_with_tasks_only", opts: opts{PlanReview: true, TasksOnly: true}, wantErr: true, errMsg: "conflicts with --tasks-only"},
 	}
 
 	for _, tc := range tests {
@@ -2598,6 +2608,10 @@ func TestIsResetOnly(t *testing.T) {
 	t.Run("reset_with_init", func(t *testing.T) {
 		assert.False(t, isResetOnly(opts{Reset: true, Init: true}))
 	})
+
+	t.Run("reset_with_plan_review", func(t *testing.T) {
+		assert.False(t, isResetOnly(opts{Reset: true, PlanReview: true}))
+	})
 }
 
 func TestResolveVersion(t *testing.T) {
@@ -3591,5 +3605,420 @@ func TestArchivePlanWorktree(t *testing.T) {
 
 		cleanupWorktree(run.mainGitSvc, run.mainDir, run.wtPath, run.preserve)
 		assert.DirExists(t, run.wtPath)
+	})
+}
+
+func TestPlanReviewFlags(t *testing.T) {
+	o := parseTestOpts(t, "--plan-review", "docs/plans/x.md")
+	assert.True(t, o.PlanReview)
+	assert.Equal(t, "docs/plans/x.md", o.PlanFile)
+	assert.Equal(t, processor.ModePlanReview, determineMode(o))
+}
+
+// planModeFixture is a repo with one plan file, the CWD set to the repo root, and a loaded config.
+type planModeFixture struct {
+	dir      string
+	planFile string
+	req      executePlanRequest
+}
+
+func setupPlanModeFixture(t *testing.T) planModeFixture {
+	t.Helper()
+	dir := setupTestRepo(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	plansDir := filepath.Join(dir, "docs", "plans")
+	require.NoError(t, os.MkdirAll(plansDir, 0o750))
+	planFile := filepath.Join(plansDir, "feature.md")
+	require.NoError(t, os.WriteFile(planFile, []byte("# Feature\n\n## Overview\nadd a feature\n\n### Task 1: do it\n- [ ] item\n"), 0o600))
+
+	cfg, err := config.Load(t.TempDir())
+	require.NoError(t, err)
+	cfg.PlansDir = filepath.Join("docs", "plans")
+
+	gitSvc, err := git.NewService(".", testColors().Info())
+	require.NoError(t, err)
+
+	return planModeFixture{
+		dir:      dir,
+		planFile: planFile,
+		req: executePlanRequest{
+			Mode:          processor.ModePlanReview,
+			GitSvc:        gitSvc,
+			Config:        cfg,
+			Colors:        testColors(),
+			DefaultBranch: "master",
+			BaseRef:       "master",
+		},
+	}
+}
+
+// stubContinue replaces the continue question and the implementation step for one test.
+// it returns a pointer to the plan path passed to the implementation step ("" when not called).
+func stubContinue(t *testing.T, answer bool) *string {
+	t.Helper()
+	origConfirm, origImpl := confirmContinue, runImplementation
+	t.Cleanup(func() { confirmContinue, runImplementation = origConfirm, origImpl })
+
+	var got string
+	confirmContinue = func(context.Context) bool { return answer }
+	runImplementation = func(_ context.Context, _ opts, _ executePlanRequest, planFile string) error {
+		got = planFile
+		return nil
+	}
+	return &got
+}
+
+// stubReviewerAnswer replaces the input collector for one test. the plan review question gets
+// reviewer as the answer and the findings question gets "None". it returns a pointer to the
+// options offered by the reviewer question (nil when the question was not asked).
+func stubReviewerAnswer(t *testing.T, reviewer string) *[]string {
+	t.Helper()
+	orig := newInputCollector
+	t.Cleanup(func() { newInputCollector = orig })
+
+	var offered []string
+	newInputCollector = func(bool) processor.InputCollector {
+		return &mocks.InputCollectorMock{
+			AskQuestionFunc: func(_ context.Context, question string, options []string) (string, error) {
+				if question == "Review the plan before implementation?" {
+					offered = options
+					return reviewer, nil
+				}
+				return "None", nil
+			},
+		}
+	}
+	return &offered
+}
+
+func TestPlanProcessorConfig(t *testing.T) {
+	tests := []struct {
+		name           string
+		codexEnabled   bool
+		toolFlagSet    bool
+		wantCodex      bool
+		wantToolFlagIn bool
+	}{
+		{name: "codex enabled", codexEnabled: true, wantCodex: true},
+		{name: "codex disabled", codexEnabled: false, wantCodex: false},
+		{name: "external tool flag set", codexEnabled: true, toolFlagSet: true, wantCodex: true, wantToolFlagIn: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := executePlanRequest{
+				Config:  &config.Config{CodexEnabled: tc.codexEnabled, PlanModel: "opus", IterationDelayMs: 7},
+				BaseRef: "develop",
+			}
+			o := opts{NoColor: true, Debug: true, externalReviewToolSet: tc.toolFlagSet}
+
+			for _, mode := range []processor.Mode{processor.ModePlan, processor.ModePlanReview} {
+				cfg := planProcessorConfig(o, req, processor.Config{Mode: mode, PlanFile: "p.md", MaxIterations: 3})
+
+				assert.Equal(t, mode, cfg.Mode)
+				assert.Equal(t, "p.md", cfg.PlanFile)
+				assert.Equal(t, 3, cfg.MaxIterations)
+				assert.Equal(t, tc.wantCodex, cfg.CodexEnabled, "external reviewer availability depends on CodexEnabled")
+				assert.Equal(t, tc.wantToolFlagIn, cfg.ExternalReviewToolSet)
+				assert.Equal(t, "opus", cfg.TaskModel)
+				assert.Equal(t, "develop", cfg.DefaultBranch)
+				assert.Equal(t, 7, cfg.IterationDelayMs)
+				assert.True(t, cfg.Debug)
+				assert.True(t, cfg.NoColor)
+				assert.Same(t, req.Config, cfg.AppConfig)
+			}
+		})
+	}
+}
+
+func TestRunHeaderParams_PlanReview(t *testing.T) {
+	cfg := &config.Config{PlanModel: "opus:high", TaskModel: "sonnet"}
+
+	p := runHeaderParams(opts{}, cfg, processor.ModePlanReview)
+
+	assert.Equal(t, "opus:high", p.PlanModel)
+	assert.Empty(t, p.TaskModel)
+}
+
+func TestRunPlanReviewMode(t *testing.T) {
+	t.Run("explicit plan file, no branch or worktree, continue no", func(t *testing.T) {
+		fx := setupPlanModeFixture(t)
+		stubReviewerAnswer(t, "Skip review")
+		impl := stubContinue(t, false)
+
+		err := runPlanReviewMode(t.Context(), opts{PlanFile: fx.planFile, NoColor: true}, fx.req, plan.NewSelector(fx.req.Config.PlansDir, testColors()))
+		require.NoError(t, err)
+
+		assert.Empty(t, *impl, "answering no must not start implementation")
+		branch, err := fx.req.GitSvc.CurrentBranch()
+		require.NoError(t, err)
+		assert.Equal(t, "master", branch, "plan-review mode must not create a branch")
+		assert.NoDirExists(t, filepath.Join(fx.dir, ".ralphex", "worktrees"))
+		assert.FileExists(t, filepath.Join(fx.dir, ".ralphex", "progress", "progress-feature-plan-review.txt"))
+	})
+
+	t.Run("ensures local gitignore", func(t *testing.T) {
+		fx := setupPlanModeFixture(t)
+		stubReviewerAnswer(t, "Skip review")
+		stubContinue(t, false)
+
+		err := runPlanReviewMode(t.Context(), opts{PlanFile: fx.planFile, NoColor: true}, fx.req, plan.NewSelector(fx.req.Config.PlansDir, testColors()))
+		require.NoError(t, err)
+
+		out, err := exec.Command("git", "-C", fx.dir, "check-ignore", ".ralphex/progress/x.txt").CombinedOutput()
+		require.NoError(t, err, "progress dir must be ignored: %s", out)
+	})
+
+	t.Run("selector picks the only plan", func(t *testing.T) {
+		fx := setupPlanModeFixture(t)
+		stubReviewerAnswer(t, "Skip review")
+		impl := stubContinue(t, true)
+
+		err := runPlanReviewMode(t.Context(), opts{NoColor: true}, fx.req, plan.NewSelector(fx.req.Config.PlansDir, testColors()))
+		require.NoError(t, err)
+
+		resolvedPlan, err := filepath.EvalSymlinks(fx.planFile)
+		require.NoError(t, err)
+		resolvedGot, err := filepath.EvalSymlinks(*impl)
+		require.NoError(t, err)
+		assert.Equal(t, resolvedPlan, resolvedGot, "continue yes must pass the selected plan to the shared helper")
+	})
+
+	t.Run("continue yes calls shared helper with plan path", func(t *testing.T) {
+		fx := setupPlanModeFixture(t)
+		stubReviewerAnswer(t, "Skip review")
+		impl := stubContinue(t, true)
+
+		err := runPlanReviewMode(t.Context(), opts{PlanFile: fx.planFile, NoColor: true}, fx.req, plan.NewSelector(fx.req.Config.PlansDir, testColors()))
+		require.NoError(t, err)
+
+		assert.NotEmpty(t, *impl)
+		assert.True(t, filepath.IsAbs(*impl))
+	})
+
+	t.Run("missing plan file is an error", func(t *testing.T) {
+		fx := setupPlanModeFixture(t)
+		stubReviewerAnswer(t, "Skip review")
+		impl := stubContinue(t, true)
+
+		err := runPlanReviewMode(t.Context(), opts{PlanFile: filepath.Join(fx.dir, "nope.md"), NoColor: true}, fx.req, plan.NewSelector(fx.req.Config.PlansDir, testColors()))
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "select plan")
+		assert.Empty(t, *impl)
+	})
+
+	t.Run("run error is wrapped and the progress log is marked failed", func(t *testing.T) {
+		fx := setupPlanModeFixture(t)
+		stubReviewerAnswer(t, "Skip review")
+		impl := stubContinue(t, true)
+		// a directory in place of the plan file makes the runner fail reading the plan overview
+		badPlan := filepath.Join(fx.dir, "docs", "plans", "dirplan.md")
+		require.NoError(t, os.MkdirAll(badPlan, 0o750))
+
+		err := runPlanReviewMode(t.Context(), opts{PlanFile: badPlan, NoColor: true}, fx.req, plan.NewSelector(fx.req.Config.PlansDir, testColors()))
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "plan review")
+		assert.Empty(t, *impl)
+		data, readErr := os.ReadFile(filepath.Join(fx.dir, ".ralphex", "progress", "progress-dirplan-plan-review.txt"))
+		require.NoError(t, readErr)
+		assert.Contains(t, string(data), "Failed:")
+	})
+}
+
+// writeFakeCodexReview writes a fake codex command that records each call and prints NO ISSUES FOUND.
+func writeFakeCodexReview(t *testing.T, marker string) string {
+	t.Helper()
+	fake := filepath.Join(t.TempDir(), "fake-codex")
+	writeExecutable(t, fake, "#!/bin/sh\necho called >> '"+marker+"'\necho 'NO ISSUES FOUND'\n")
+	return fake
+}
+
+func TestRunPlanReviewMode_ExternalReviewer(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fake codex")
+	}
+	fx := setupPlanModeFixture(t)
+	offered := stubReviewerAnswer(t, "External reviewer")
+	marker := filepath.Join(t.TempDir(), "codex-calls")
+	fx.req.Config.CodexEnabled = true
+	fx.req.Config.CodexCommand = writeFakeCodexReview(t, marker)
+	stubContinue(t, false)
+
+	err := runPlanReviewMode(t.Context(), opts{PlanFile: fx.planFile, NoColor: true}, fx.req, plan.NewSelector(fx.req.Config.PlansDir, testColors()))
+	require.NoError(t, err)
+
+	// the external reviewer is only available when CodexEnabled reaches the processor
+	assert.FileExists(t, marker, "the chosen external reviewer must run the codex command")
+	assert.Equal(t, []string{"External reviewer", "Same agent", "Skip review"}, *offered, "External reviewer is listed first")
+
+	// the progress file keeps the round section and the review result
+	data, readErr := os.ReadFile(filepath.Join(fx.dir, ".ralphex", "progress", "progress-feature-plan-review.txt"))
+	require.NoError(t, readErr)
+	assert.Contains(t, string(data), "plan review round 1")
+	assert.Contains(t, string(data), "plan review found no issues")
+}
+
+func TestRunPlanReviewMode_ProgressKeepsWarningAndRawOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fake codex")
+	}
+	fx := setupPlanModeFixture(t)
+	stubReviewerAnswer(t, "External reviewer")
+	fx.req.Config.CodexEnabled = true
+	fake := filepath.Join(t.TempDir(), "fake-codex")
+	writeExecutable(t, fake, "#!/bin/sh\necho 'the plan looks odd but has no list'\n")
+	fx.req.Config.CodexCommand = fake
+	stubContinue(t, false)
+
+	err := runPlanReviewMode(t.Context(), opts{PlanFile: fx.planFile, NoColor: true}, fx.req, plan.NewSelector(fx.req.Config.PlansDir, testColors()))
+	require.NoError(t, err)
+
+	data, readErr := os.ReadFile(filepath.Join(fx.dir, ".ralphex", "progress", "progress-feature-plan-review.txt"))
+	require.NoError(t, readErr)
+	assert.Contains(t, string(data), "no findings in the expected format")
+	assert.Contains(t, string(data), "the plan looks odd but has no list")
+}
+
+func TestRunPlanReviewMode_CodexExecutorHidesExternalReviewer(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fake codex")
+	}
+	fx := setupPlanModeFixture(t)
+	offered := stubReviewerAnswer(t, "External reviewer")
+	marker := filepath.Join(t.TempDir(), "codex-calls")
+	fx.req.Config.Executor = config.ExecutorCodex
+	fx.req.Config.CodexEnabled = true
+	fx.req.Config.CodexCommand = writeFakeCodexReview(t, marker)
+	stubContinue(t, false)
+
+	err := runPlanReviewMode(t.Context(), opts{PlanFile: fx.planFile, NoColor: true}, fx.req, plan.NewSelector(fx.req.Config.PlansDir, testColors()))
+	require.NoError(t, err)
+
+	assert.NoFileExists(t, marker, "the external reviewer is not available under the codex executor")
+	assert.Equal(t, []string{"Same agent", "Skip review"}, *offered, "the codex executor must not offer External reviewer")
+}
+
+func TestRunPlanMode_ExternalReviewerAndContinue(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fakes")
+	}
+	fx := setupPlanModeFixture(t)
+	stubReviewerAnswer(t, "External reviewer")
+	fx.req.Mode = processor.ModePlan
+	marker := filepath.Join(t.TempDir(), "codex-calls")
+	fx.req.Config.CodexEnabled = true
+	fx.req.Config.CodexCommand = writeFakeCodexReview(t, marker)
+
+	// fake claude planner: writes a new plan file, then reports PLAN_READY
+	newPlan := filepath.Join(fx.dir, "docs", "plans", "created.md")
+	const readyEvent = `{"type":"assistant","message":{"content":` +
+		`[{"type":"text","text":"<<<RALPHEX:PLAN_READY>>>"}]}}`
+	fakeClaude := filepath.Join(t.TempDir(), "fake-claude")
+	writeExecutable(t, fakeClaude, "#!/bin/sh\ncat > /dev/null\nprintf '# Created\\n\\n## Overview\\nx\\n' > '"+newPlan+"'\necho '"+readyEvent+"'\n")
+	fx.req.Config.ClaudeCommand = fakeClaude
+	impl := stubContinue(t, true)
+
+	err := runPlanMode(t.Context(), opts{PlanDescription: "make a thing", NoColor: true, MaxIterations: 2}, fx.req,
+		plan.NewSelector(fx.req.Config.PlansDir, testColors()))
+	require.NoError(t, err)
+
+	assert.FileExists(t, marker, "external reviewer must be offered and run in plan mode")
+	assert.NotEmpty(t, *impl, "continue yes must use the shared implementation helper")
+	assert.Equal(t, "created.md", filepath.Base(*impl))
+
+	// the progress file of plan mode keeps the review output too
+	files, globErr := filepath.Glob(filepath.Join(fx.dir, ".ralphex", "progress", "progress-plan-*.txt"))
+	require.NoError(t, globErr)
+	require.NotEmpty(t, files)
+	data, readErr := os.ReadFile(files[0])
+	require.NoError(t, readErr)
+	assert.Contains(t, string(data), "plan review found no issues")
+}
+
+func TestRunRoutesPlanReviewMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fake codex")
+	}
+	skipIfClaudeNotAvailable(t)
+	fx := setupPlanModeFixture(t)
+	stubReviewerAnswer(t, "External reviewer")
+	impl := stubContinue(t, false)
+	marker := filepath.Join(t.TempDir(), "codex-calls")
+	configDir := t.TempDir()
+	cfgText := "codex_command = " + writeFakeCodexReview(t, marker) + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config"), []byte(cfgText), 0o600))
+
+	o := opts{PlanReview: true, PlanFile: fx.planFile, NoColor: true, ConfigDir: configDir}
+	err := run(t.Context(), o)
+	require.NoError(t, err)
+
+	assert.Empty(t, *impl)
+	assert.FileExists(t, marker, "run must route --plan-review to the review with the external reviewer available")
+	assert.FileExists(t, filepath.Join(fx.dir, ".ralphex", "progress", "progress-feature-plan-review.txt"))
+	branch, err := fx.req.GitSvc.CurrentBranch()
+	require.NoError(t, err)
+	assert.Equal(t, "master", branch, "plan-review mode must not create a branch")
+}
+
+func TestPrintStartupInfo_PlanReview(t *testing.T) {
+	out := captureStdout(t, func() {
+		printStartupInfo(startupInfo{
+			PlanFile: "docs/plans/feature.md", Branch: "master", Mode: processor.ModePlanReview,
+			MaxIterations: 5, ProgressPath: "progress-feature-plan-review.txt",
+		}, testColors())
+	})
+
+	assert.Contains(t, out, "starting plan review")
+	assert.Contains(t, out, "feature.md")
+}
+
+func TestContinueWithImplementation(t *testing.T) {
+	setup := func(t *testing.T) (string, string, *git.Service) {
+		t.Helper()
+		dir := setupTestRepo(t)
+		origDir, err := os.Getwd()
+		require.NoError(t, err)
+		require.NoError(t, os.Chdir(dir))
+		t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "plans"), 0o750))
+		planPath := filepath.Join(dir, "docs", "plans", "cont-plan.md")
+		require.NoError(t, os.WriteFile(planPath, []byte("# Cont\n"), 0o600))
+		runGit(t, dir, "add", "docs/plans/cont-plan.md")
+		runGit(t, dir, "commit", "-m", "add plan")
+
+		gitSvc, err := git.NewService(dir, noopLogger())
+		require.NoError(t, err)
+		return dir, planPath, gitSvc
+	}
+
+	t.Run("worktree_mode_returns_worktree_error", func(t *testing.T) {
+		dir, planPath, gitSvc := setup(t)
+		// pre-create worktree dir to force an "already exists" error
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".ralphex", "worktrees", "cont-plan"), 0o750))
+
+		err := continueWithImplementation(t.Context(), opts{MaxIterations: 1, NoColor: true}, executePlanRequest{
+			GitSvc: gitSvc, Config: &config.Config{WorktreeEnabled: true}, Colors: testColors(),
+			DefaultBranch: "master", WtCleanup: &worktreeCleanupFn{},
+		}, planPath)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "create worktree")
+	})
+
+	t.Run("branch_mode_returns_branch_error", func(t *testing.T) {
+		dir, planPath, gitSvc := setup(t)
+		// a dirty tracked file makes branch creation fail in in-place mode
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# dirty\n"), 0o600))
+
+		err := continueWithImplementation(t.Context(), opts{MaxIterations: 1, NoColor: true}, executePlanRequest{
+			GitSvc: gitSvc, Config: &config.Config{}, Colors: testColors(), DefaultBranch: "master",
+		}, planPath)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "create branch for plan")
 	})
 }

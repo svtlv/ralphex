@@ -56,7 +56,8 @@ ralphex solves both problems. Each task executes in a fresh Claude Code session 
 - **Docker support** - run in isolated container for safer autonomous execution
 - **Notifications** - optional alerts on completion/failure via Telegram, Email, Slack, Webhook, or custom script
 - **Worktree isolation** - run multiple plans in parallel via `--worktree` flag
-- **Multiple modes** - full execution, tasks-only, review-only, external-only, or plan creation
+- **Multiple modes** - full execution, tasks-only, review-only, external-only, plan creation, or plan review
+- **Plan review** - review a plan file before implementation with an external reviewer or the same agent, via `--plan-review` or after `--plan`
 
 ## Quick Start
 
@@ -255,7 +256,7 @@ When `executor = codex` is set in config and the user has also set `external_rev
 
 The `--worktree` flag runs plan execution in an isolated git worktree at `.ralphex/worktrees/<branch>`, enabling parallel execution of multiple plans on the same repo without branch conflicts.
 
-**Supported modes:** `--worktree` only applies to full mode and `--tasks-only`. It is silently ignored for `--review`, `--external-only`, and `--plan` — these modes operate from the current directory.
+**Supported modes:** `--worktree` only applies to full mode and `--tasks-only`. It is silently ignored for `--review`, `--external-only`, `--plan`, and `--plan-review` — these modes operate from the current directory.
 
 **Source checkout state:** Uncommitted files in the source checkout do not have to be stashed first. Ralphex lists them in a warning and does not copy them into the generated worktree. An uncommitted selected plan is copied so it can be committed on the feature branch. A new feature branch starts at the current `HEAD`; an existing feature branch keeps its own tip. Local `.ralphex` configuration is loaded before worktree creation and still applies to the run. Commit any repository changes the plan needs before starting. An unfinished Git operation remains a hard error because completion archives the plan in the source checkout. In-place branch mode also requires a clean checkout because it creates the feature branch in that same working tree.
 
@@ -306,12 +307,78 @@ QUESTION: Which cache backend?
 [10:31:00] continuing plan creation...
 [10:32:05] plan written to docs/plans/add-api-caching.md
 
+Review the plan before implementation?
+  > External reviewer
+    Same agent
+    Skip review
+
 Continue with plan implementation?
   > Yes, execute plan
     No, exit
 ```
 
-After plan creation, you can choose to continue with immediate execution or exit to run ralphex later. Progress is logged to `.ralphex/progress/progress-plan-<name>.txt`.
+After plan creation and the optional [plan review](#plan-review), you can choose to continue with immediate execution or exit to run ralphex later. Progress is logged to `.ralphex/progress/progress-plan-<name>.txt`.
+
+#### Plan Review
+
+After the plan file is written, ralphex offers a review of that file before implementation. There are two entry points and one implementation:
+
+- `ralphex --plan "description"` - the review runs after the plan is ready. A run that continues into implementation gets the review before the tasks.
+- `ralphex --plan-review [plan-file]` - reviews an existing plan file. It asks no planner questions, makes no drafts, and creates no branch or worktree. Without a file argument, the plan selector (fzf or numbered list) picks the plan. After the review it asks `Continue with plan implementation?`, the same as plan mode.
+
+Executing an existing plan directly (full, `--tasks-only`, `--review` modes) runs no plan review.
+
+**Flow:**
+
+```
+plan file written
+   |
+   v
+"Review the plan before implementation?"
+   External reviewer | Same agent | Skip review
+   |
+   v
+reviewer reads the plan and the code, prints findings
+   |
+   v
+numbered findings --> "Which findings should be applied?"
+   |
+   v
+chosen findings --> planner session edits the plan in place
+   |
+   v
+repeat (max 5 rounds) until Skip review, no issues, or no findings applied
+```
+
+**Reviewers:**
+
+| Reviewer | What runs |
+|----------|-----------|
+| External reviewer | The configured external tool: codex (`codex_command`, `codex_model`, ...) or the custom review script (`custom_review_script`). Listed first when available |
+| Same agent | The plan executor (`claude_command`, or codex under `--codex`), read-only |
+| Skip review | No review. Always present |
+
+External reviewer is hidden when `external_review_tool = none`, when no custom script is set, and under `--codex` (which forces the external tool to `none`).
+
+**Prompt texts (stable):**
+
+- Reviewer question: `Review the plan before implementation?` with options `External reviewer`, `Same agent`, `Skip review`
+- Findings question: `Which findings should be applied?` with options `All findings`, `None`. Use the Other option to type numbers such as `1,3`, `1 3` or `2-4`. An invalid answer is asked again up to 2 times, then counts as none
+- Continue question: `Continue with plan implementation?`
+
+**Finding format:** the reviewer prints one finding per line as `CRITICAL|MAJOR|MINOR: <section> - <text>`, or exactly `NO ISSUES FOUND`. ralphex parses findings from stdout only. It keeps only lines that match the format and drops exact duplicates. A custom review script must therefore print its findings on stdout.
+
+**Always interactive:** ralphex asks the reviewer question every time. There is no config option or flag to preselect a reviewer; choose `Skip review` to go on without one. `--plan-review` cannot be combined with `--plan`, `--review`, `--external-only`, `--codex-only` or `--tasks-only`.
+
+```bash
+ralphex --plan-review docs/plans/feature.md
+```
+
+**Read-only guard:** the review prompt tells the reviewer not to edit files. Because the same-agent reviewer runs with `--dangerously-skip-permissions` in your checkout, the prompt alone cannot stop an edit or a commit. ralphex therefore compares git HEAD, `git status --porcelain` and file content hashes before and after each review (paths under `.ralphex/` are skipped). If anything changed, ralphex logs a warning that names the changed paths, discards that round's findings and ends the review. It restores only the plan file from stored bytes. It does not revert code files or commits. Known limit: the guard cannot tell a reviewer edit from your own edit or commit in another terminal during a review, so such an edit also discards that round's findings.
+
+**Failure rule:** a failed, timed-out or unparseable review never blocks the plan. ralphex logs a warning and continues. Rate limit and quota errors follow the usual `--wait` handling first.
+
+Customize the review prompt with `plan_review.txt` (see [Custom prompts](#custom-prompts)). The review and its questions, answers and warnings are logged to the progress file. In `--plan-review` mode the file is `.ralphex/progress/progress-<plan-stem>-plan-review.txt`.
 
 ## Installation
 
@@ -740,6 +807,9 @@ ralphex --init
 # interactive plan creation
 ralphex --plan "add user authentication"
 
+# review an existing plan file before implementation
+ralphex --plan-review docs/plans/feature.md
+
 # with custom max iterations
 ralphex --max-iterations=100 docs/plans/feature.md
 
@@ -805,6 +875,7 @@ ralphex --serve --port=3000 docs/plans/feature.md
 | `--worktree` | Run in isolated git worktree (full and tasks-only modes only) | false |
 | `--preserve-anthropic-api-key` | Pass `ANTHROPIC_API_KEY` through to claude (for users authenticating Claude Code via API key rather than OAuth/keychain) | false |
 | `--plan` | Create plan interactively (provide description) | - |
+| `--plan-review` | Review an existing plan file (positional argument, or pick with the selector) and apply chosen findings; no branch or worktree is created | false |
 | `-s, --serve` | Start web dashboard for real-time streaming | false |
 | `-p, --port` | Web dashboard port (used with `--serve`) | 8080 |
 | `-w, --watch` | Directories to watch for progress files (repeatable) | - |
@@ -896,6 +967,7 @@ Custom prompt files support variable expansion. All variables use the `{{VARIABL
 | `{{PROGRESS_FILE}}` | Path to the progress log file | `.ralphex/progress/progress-feature.txt` |
 | `{{GOAL}}` | Human-readable goal description | `implementation of plan at docs/plans/feature.md` |
 | `{{DEFAULT_BRANCH}}` | Default branch name (overridable via `--base-ref` or `default_branch` config) | `main`, `master`, `origin/main` |
+| `{{PLAN_DESCRIPTION}}` | What the plan should achieve (plan creation and plan review prompts only) | `add health check endpoint` |
 | `{{agent:name}}` | Expands to Task tool instructions for the named agent | (see below) |
 
 **Agent references:**
@@ -935,6 +1007,7 @@ The entire system is designed for customization - both task execution and review
 - `custom_eval.txt` - custom evaluation prompt (Claude evaluates custom tool output)
 - `review_second.txt` - final review, critical/major issues only (default: 2 agents - quality, implementation; customizable)
 - `make_plan.txt` - interactive plan creation prompt
+- `plan_review.txt` - plan review prompt (sent to the plan reviewer; findings as `CRITICAL|MAJOR|MINOR: <section> - <text>`)
 - `finalize.txt` - optional finalize step prompt (disabled by default)
 
 **Comment lines and markdown headers:**
@@ -1000,6 +1073,7 @@ ralphex uses a configuration directory at `~/.config/ralphex/` (override with `-
 │   ├── custom_review.txt
 │   ├── custom_eval.txt
 │   ├── make_plan.txt
+│   ├── plan_review.txt
 │   └── finalize.txt
 └── agents/             # custom review agents (*.txt files)
 ```

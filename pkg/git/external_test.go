@@ -85,6 +85,43 @@ func TestExternalBackend_Root(t *testing.T) {
 	assert.NotEmpty(t, eb.root())
 }
 
+func TestExternalBackend_statusPorcelainZ(t *testing.T) {
+	t.Run("clean repo returns empty output", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+
+		out, err := eb.statusPorcelainZ()
+		require.NoError(t, err)
+		assert.Empty(t, out)
+	})
+
+	t.Run("lists individual files in untracked directory with exact paths", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "newdir"), 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "newdir", "a b.txt"), []byte("x"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "newdir", "c.txt"), []byte("y"), 0o600))
+
+		out, err := eb.statusPorcelainZ()
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{"?? newdir/a b.txt", "?? newdir/c.txt"}, strings.Split(strings.TrimRight(out, "\x00"), "\x00"))
+	})
+
+	t.Run("service exposes the same output", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0o600))
+
+		out, err := svc.StatusPorcelain()
+		require.NoError(t, err)
+		assert.Contains(t, out, "?? f.txt")
+	})
+}
+
 func TestExternalBackend_headHash(t *testing.T) {
 	t.Run("returns valid 40-char hex string", func(t *testing.T) {
 		dir := setupExternalTestRepo(t)

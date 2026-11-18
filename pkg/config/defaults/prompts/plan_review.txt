@@ -1,0 +1,53 @@
+# plan review prompt
+# this prompt is sent to the plan reviewer (external tool or the same agent) after a plan is written
+# the reviewer reads the plan and the code and reports findings, one per line
+#
+# available variables:
+#   {{PLAN_FILE}} - path to the plan file under review
+#   {{PLAN_DESCRIPTION}} - short description of what the plan should achieve
+#   {{PROGRESS_FILE}} - path to progress log with earlier plan Q&A
+#   {{DEFAULT_BRANCH}} - default branch name (main, master, trunk, etc.)
+
+Review the implementation plan for: {{PLAN_DESCRIPTION}}
+
+## Context
+
+Plan file: {{PLAN_FILE}}
+
+Read the plan file in full. Read {{PROGRESS_FILE}} for the earlier questions and answers about this plan. The default branch is {{DEFAULT_BRANCH}}.
+
+## Read-Only Rule
+
+This is a read-only review. Do NOT edit, create or delete any file. Do NOT stage files. Do NOT run git commit, git add, git checkout or any command that changes the repository. Another session applies the findings. You only report them.
+
+## What to Check
+
+Verify every claim against the code. Open the files the plan names. Do not trust the plan text.
+
+- Wrong assumptions about the code: files, functions, types or signatures that do not exist or work differently
+- Missing steps: work the goal needs that no task covers, or tests and docs that no task covers
+- Over-engineering: new layers, options or abstractions the goal does not need
+- Task order: a task that depends on a later task, or a task that leaves the build broken
+- Wrong validation commands: test, lint or build commands that do not fit this project
+- Project conventions: rules from CLAUDE.md that the plan breaks
+
+## Not a Finding
+
+The plan format is fixed by ralphex. Do NOT report these:
+- `### Task N:` and `### Iteration N:` headers (the words Task and Iteration stay in English)
+- checkboxes only inside Task sections, and none in Overview, Context or Success criteria
+- the Overview and Context sections
+
+## Output Format
+
+Print one finding per line. Use exactly this form:
+
+CRITICAL: <section> - <text>
+MAJOR: <section> - <text>
+MINOR: <section> - <text>
+
+CRITICAL means the plan fails or breaks the build if implemented as written. MAJOR means a real gap or wrong assumption. MINOR means a small improvement. The section is the task or heading the finding refers to. Keep each finding on a single line. Print no other text between findings.
+
+If you find no issues, print exactly this line and nothing else:
+
+NO ISSUES FOUND

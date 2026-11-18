@@ -63,6 +63,35 @@ func TestExternalReviewPhaseTool(t *testing.T) {
 	}
 }
 
+func TestResolveExternalReviewTool(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		{name: "nil app config and codex enabled", cfg: Config{CodexEnabled: true}, want: "codex"},
+		{name: "nil app config and codex disabled", cfg: Config{}, want: "none"},
+		{name: "codex enabled default", cfg: Config{CodexEnabled: true, AppConfig: testAppConfig(t)}, want: "codex"},
+		{name: "disabled backward compat", cfg: Config{AppConfig: testAppConfig(t)}, want: "none"},
+		{name: "explicit override", cfg: explicitExternalToolConfig(t, "codex", false), want: "codex"},
+		{name: "configured none", cfg: configuredExternalToolConfig(t, "none"), want: "none"},
+		{name: "configured custom", cfg: configuredExternalToolConfig(t, "custom"), want: "custom"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, ResolveExternalReviewTool(tc.cfg))
+		})
+	}
+}
+
+func TestExternalReviewPhaseToolMatchesResolver(t *testing.T) {
+	cfg := configuredExternalToolConfig(t, "custom")
+	phase, _ := externalReviewPhaseFromRunner(t, externalReviewPhaseTestOpts{cfg: cfg})
+
+	assert.Equal(t, ResolveExternalReviewTool(cfg), phase.Tool())
+}
+
 func TestExternalReviewPhaseRunCodexNoFindings(t *testing.T) {
 	review := newTaskPhaseMockExecutor([]executor.Result{{Output: "done", Signal: status.CodexDone}})
 	external := newTaskPhaseMockExecutor([]executor.Result{{Output: "found issue"}})

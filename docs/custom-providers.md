@@ -94,6 +94,8 @@ ralphex --claude-command=/path/to/wrapper.sh --external-review-tool=custom --cus
 
 `--external-review-tool` accepts `codex`, `custom`, or `none`. When `custom` is selected, `--custom-review-script` points at the script that receives the external review prompt file path.
 
+The same script also serves as External reviewer in plan review (`--plan`, `--plan-review`). For plan review the script must print its findings on stdout, one per line as `CRITICAL|MAJOR|MINOR: <section> - <text>`, or `NO ISSUES FOUND`. ralphex reads stdout only and keeps only lines that match this format.
+
 ## Codex wrapper (included compatibility example)
 
 **Compatibility path.** The wrapper at `scripts/codex-as-claude/codex-as-claude.sh` is kept for backwards compatibility — existing setups continue to work, but the wrapper carries overhead (JSONL-to-stream-json translation via `jq`) and uses Claude-flavored review prompts in front of a codex model. The first-class path avoids both.

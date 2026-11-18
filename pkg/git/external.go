@@ -86,6 +86,16 @@ func (e *externalBackend) headHash() (string, error) {
 	return out, nil
 }
 
+// statusPorcelainZ returns `status --porcelain -uall -z` output.
+// -uall lists individual files instead of collapsed untracked directories; -z keeps paths exact.
+func (e *externalBackend) statusPorcelainZ() (string, error) {
+	out, err := e.run("status", "--porcelain", "-uall", "-z")
+	if err != nil {
+		return "", fmt.Errorf("get status: %w", err)
+	}
+	return out, nil
+}
+
 // diffFingerprint returns a sha256 hash of the working tree state (tracked diffs + untracked file content).
 // includes untracked file content hashes so that edits to existing untracked files are detected,
 // not just new file creation.

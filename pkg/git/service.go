@@ -24,6 +24,7 @@ type Logger interface {
 type backend interface {
 	root() string
 	headHash() (string, error)
+	statusPorcelainZ() (string, error)
 	hasCommits() (bool, error)
 	currentBranch() (string, error)
 	getDefaultBranch() string
@@ -100,6 +101,12 @@ func (s *Service) Root() string {
 // HeadHash returns the current HEAD commit hash as a hex string.
 func (s *Service) HeadHash() (string, error) {
 	return s.repo.headHash()
+}
+
+// StatusPorcelain returns `status --porcelain -uall -z` output: NUL-separated entries listing
+// individual files (untracked directories are expanded), with exact unquoted paths relative to the repo root.
+func (s *Service) StatusPorcelain() (string, error) {
+	return s.repo.statusPorcelainZ()
 }
 
 // DiffFingerprint returns a hash of the current working tree state (tracked diffs + untracked file content).
