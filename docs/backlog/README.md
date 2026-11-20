@@ -32,6 +32,10 @@ change to upstream policy. No item is complete merely because a related PR exist
 9. [Reject unknown pi thinking levels](pi-ignores-unknown-thinking-level.md):
    blocked on refreshing upstream behavior/choosing a fork-side mitigation; do not
    confuse it with effective-level observability. No upstream write is implied.
+10. [Archive a plan from an ignored plans folder](plan-archive-fails-in-ignored-plans-dir.md):
+   move the file without add or commit when git ignores it; today the run ends with an error.
+11. [Codex model banner on every call](codex-model-banner-shown-only-on-first-call.md):
+   show the resolved model and effort, and agrouter's selection line, for each codex call.
 
 ## Design decisions (`worth: maybe`, not rejected)
 
@@ -55,6 +59,7 @@ change to upstream policy. No item is complete merely because a related PR exist
 - [Watcher test shutdown joins](watcher-tests-never-join-start-goroutine.md)
 - [Durable completed-worktree progress](worktree-archives-unticked-plan.md)
 - [Worktree configuration precedence](worktree-ignores-its-own-ralphex-config.md)
+- [Claude review rounds repeat research](claude-review-rounds-repeat-research.md)
 
 ## Existing plan boundary
 
