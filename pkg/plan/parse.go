@@ -179,6 +179,62 @@ func FileHasUncompletedCheckbox(path string) (bool, error) {
 	return false, nil
 }
 
+// headingPattern matches a markdown ATX heading and captures the hash run and the heading text.
+var headingPattern = regexp.MustCompile(`^(#{1,6})\s+(.*?)\s*#*\s*$`)
+
+// ExtractOverview returns the text of the "Overview" section of a plan file.
+// the section starts at a heading named Overview (any level) and ends at the next heading of the same or
+// a higher level, so sub-headings stay part of the section. headings inside fenced code blocks are ignored.
+// when the plan has no Overview section, the text of the first heading is returned instead.
+// an empty string is returned when the file has neither.
+func ExtractOverview(path string) (string, error) {
+	content, err := os.ReadFile(path) //nolint:gosec // path is internally resolved
+	if err != nil {
+		return "", fmt.Errorf("read plan file: %w", err)
+	}
+	return extractOverview(string(content)), nil
+}
+
+func extractOverview(content string) string {
+	var (
+		ft           fenceTracker
+		firstHeading string
+		section      []string
+		level        int // heading level of the open Overview section, 0 when not inside one
+		found        bool
+	)
+	for line := range strings.SplitSeq(content, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if ft.skip(line) {
+			// fence lines and fenced content are never headings, but stay part of an open section
+			if level > 0 {
+				section = append(section, line)
+			}
+			continue
+		}
+		if m := headingPattern.FindStringSubmatch(line); m != nil {
+			hLevel, text := len(m[1]), strings.TrimSpace(m[2])
+			if firstHeading == "" {
+				firstHeading = text
+			}
+			if level > 0 && hLevel <= level {
+				break // next section of the same or higher level ends the overview
+			}
+			if level == 0 && !found && strings.EqualFold(text, "overview") {
+				level, found = hLevel, true
+				continue
+			}
+		}
+		if level > 0 {
+			section = append(section, line)
+		}
+	}
+	if found {
+		return strings.TrimSpace(strings.Join(section, "\n"))
+	}
+	return firstHeading
+}
+
 // fenceTracker tracks markdown fenced code block state across a line-by-line scan.
 // the zero value is ready to use.
 type fenceTracker struct {

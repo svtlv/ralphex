@@ -12,11 +12,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/umputun/ralphex/pkg/config"
-	"github.com/umputun/ralphex/pkg/executor"
-	"github.com/umputun/ralphex/pkg/processor/mocks"
-	"github.com/umputun/ralphex/pkg/processor/phase"
-	"github.com/umputun/ralphex/pkg/status"
+	"github.com/svtlv/ralphex/pkg/config"
+	"github.com/svtlv/ralphex/pkg/executor"
+	"github.com/svtlv/ralphex/pkg/processor/mocks"
+	"github.com/svtlv/ralphex/pkg/processor/phase"
+	phasemocks "github.com/svtlv/ralphex/pkg/processor/phase/mocks"
+	"github.com/svtlv/ralphex/pkg/status"
 )
 
 // newMockExecutor creates a mock executor with predefined results.
@@ -1075,6 +1076,43 @@ func TestRunner_SetInputCollector_ReachesConcretePlanPhase(t *testing.T) {
 	assert.Len(t, collector.AskQuestionCalls(), 1)
 }
 
+func TestRunner_SetPlanFinder_StoresInDeps(t *testing.T) {
+	cfg := Config{Mode: ModePlan, PlanDescription: "x", MaxIterations: 5, AppConfig: testAppConfig(t)}
+	r := NewWithExecutors(cfg, newRunnerMockLogger("progress.txt"), Executors{Task: newMockExecutor(nil)}, &status.PhaseHolder{})
+	require.NotNil(t, r.deps)
+	assert.Nil(t, r.deps.PlanFinder)
+
+	finder := &phasemocks.PlanFinderMock{FindRecentFunc: func(_ time.Time) string { return "plan.md" }}
+	r.SetPlanFinder(finder)
+
+	require.NotNil(t, r.deps.PlanFinder)
+	assert.Equal(t, "plan.md", r.deps.PlanFinder.FindRecent(time.Time{}))
+}
+
+func TestRunner_SetRepoState_StoresInDeps(t *testing.T) {
+	cfg := Config{Mode: ModePlan, PlanDescription: "x", MaxIterations: 5, AppConfig: testAppConfig(t)}
+	r := NewWithExecutors(cfg, newRunnerMockLogger("progress.txt"), Executors{Task: newMockExecutor(nil)}, &status.PhaseHolder{})
+	require.NotNil(t, r.deps)
+	assert.Nil(t, r.deps.RepoState)
+
+	reader := &phasemocks.RepoStateReaderMock{RootFunc: func() string { return "/repo" }}
+	r.SetRepoState(reader)
+
+	require.NotNil(t, r.deps.RepoState)
+	assert.Equal(t, "/repo", r.deps.RepoState.Root())
+}
+
+func TestRunner_Setters_NilDeps(t *testing.T) {
+	r := &Runner{}
+
+	r.SetPlanFinder(&phasemocks.PlanFinderMock{})
+	r.SetRepoState(&phasemocks.RepoStateReaderMock{})
+
+	require.NotNil(t, r.deps)
+	assert.NotNil(t, r.deps.PlanFinder)
+	assert.NotNil(t, r.deps.RepoState)
+}
+
 func TestRunner_SetPauseHandler_ReachesConcreteTaskPhase(t *testing.T) {
 	tmpDir := t.TempDir()
 	planFile := filepath.Join(tmpDir, "plan.md")
@@ -1337,4 +1375,212 @@ func assertLogContains(t *testing.T, log *mocks.LoggerMock, text string) {
 		}
 	}
 	t.Fatalf("expected log containing %q, got %#v", text, log.PrintCalls())
+}
+
+type testPlanReviewPhase struct {
+	runFunc func(ctx context.Context, req phase.PlanReviewRequest) error
+}
+
+func (p testPlanReviewPhase) Run(ctx context.Context, req phase.PlanReviewRequest) error {
+	if p.runFunc == nil {
+		return nil
+	}
+	return p.runFunc(ctx, req)
+}
+
+func writeTestPlan(t *testing.T, overview string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "plan.md")
+	content := "# Plan\n\n## Overview\n" + overview + "\n\n## Context\nsome context\n"
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	return path
+}
+
+func TestRunner_PlanMode_Review(t *testing.T) {
+	t.Run("runs review after plan creation with found plan file", func(t *testing.T) {
+		var order []string
+		var got phase.PlanReviewRequest
+		finder := &phasemocks.PlanFinderMock{FindRecentFunc: func(time.Time) string {
+			order = append(order, "find")
+			return "docs/plans/x.md"
+		}}
+		r := NewWithExecutors(Config{Mode: ModePlan, PlanDescription: "add feature", AppConfig: testAppConfig(t)},
+			newRunnerMockLogger("progress.txt"), Executors{}, &status.PhaseHolder{})
+		r.SetPlanFinder(finder)
+		r.phases.planCreation = testPlanCreationPhase{runFunc: func(context.Context) error {
+			order = append(order, "create")
+			return nil
+		}}
+		r.phases.planReview = testPlanReviewPhase{runFunc: func(_ context.Context, req phase.PlanReviewRequest) error {
+			order = append(order, "review")
+			got = req
+			return nil
+		}}
+
+		require.NoError(t, r.Run(t.Context()))
+
+		assert.Equal(t, []string{"create", "find", "review"}, order)
+		assert.Equal(t, phase.PlanReviewRequest{PlanFile: "docs/plans/x.md", Description: "add feature"}, got)
+	})
+
+	t.Run("no review after rejection", func(t *testing.T) {
+		called := false
+		r := NewWithExecutors(Config{Mode: ModePlan, AppConfig: testAppConfig(t)},
+			newRunnerMockLogger("progress.txt"), Executors{}, &status.PhaseHolder{})
+		r.SetPlanFinder(&phasemocks.PlanFinderMock{FindRecentFunc: func(time.Time) string { return "x.md" }})
+		r.phases.planCreation = testPlanCreationPhase{runFunc: func(context.Context) error { return ErrUserRejectedPlan }}
+		r.phases.planReview = testPlanReviewPhase{runFunc: func(context.Context, phase.PlanReviewRequest) error {
+			called = true
+			return nil
+		}}
+
+		err := r.Run(t.Context())
+
+		assert.Equal(t, ErrUserRejectedPlan, err)
+		assert.False(t, called)
+	})
+
+	t.Run("no plan file found skips review", func(t *testing.T) {
+		called := false
+		r := NewWithExecutors(Config{Mode: ModePlan, AppConfig: testAppConfig(t)},
+			newRunnerMockLogger("progress.txt"), Executors{}, &status.PhaseHolder{})
+		r.SetPlanFinder(&phasemocks.PlanFinderMock{FindRecentFunc: func(time.Time) string { return "" }})
+		r.phases.planCreation = testPlanCreationPhase{}
+		r.phases.planReview = testPlanReviewPhase{runFunc: func(context.Context, phase.PlanReviewRequest) error {
+			called = true
+			return nil
+		}}
+
+		require.NoError(t, r.Run(t.Context()))
+		assert.False(t, called)
+	})
+
+	t.Run("no finder configured skips review", func(t *testing.T) {
+		called := false
+		r := NewWithExecutors(Config{Mode: ModePlan, AppConfig: testAppConfig(t)},
+			newRunnerMockLogger("progress.txt"), Executors{}, &status.PhaseHolder{})
+		r.phases.planCreation = testPlanCreationPhase{}
+		r.phases.planReview = testPlanReviewPhase{runFunc: func(context.Context, phase.PlanReviewRequest) error {
+			called = true
+			return nil
+		}}
+
+		require.NoError(t, r.Run(t.Context()))
+		assert.False(t, called)
+	})
+
+	t.Run("plan creation error is wrapped", func(t *testing.T) {
+		r := NewWithExecutors(Config{Mode: ModePlan, AppConfig: testAppConfig(t)},
+			newRunnerMockLogger("progress.txt"), Executors{}, &status.PhaseHolder{})
+		r.phases.planCreation = testPlanCreationPhase{runFunc: func(context.Context) error { return errors.New("boom") }}
+
+		err := r.Run(t.Context())
+
+		require.ErrorContains(t, err, "plan creation phase: boom")
+	})
+
+	t.Run("review error is wrapped", func(t *testing.T) {
+		r := NewWithExecutors(Config{Mode: ModePlan, AppConfig: testAppConfig(t)},
+			newRunnerMockLogger("progress.txt"), Executors{}, &status.PhaseHolder{})
+		r.SetPlanFinder(&phasemocks.PlanFinderMock{FindRecentFunc: func(time.Time) string { return "x.md" }})
+		r.phases.planCreation = testPlanCreationPhase{}
+		r.phases.planReview = testPlanReviewPhase{runFunc: func(context.Context, phase.PlanReviewRequest) error {
+			return errors.New("limit")
+		}}
+
+		err := r.Run(t.Context())
+
+		require.ErrorContains(t, err, "plan review phase: limit")
+	})
+}
+
+func TestRunner_PlanReviewMode(t *testing.T) {
+	t.Run("reviews plan file without plan creation", func(t *testing.T) {
+		planFile := writeTestPlan(t, "overview text here")
+		var got phase.PlanReviewRequest
+		creationCalled := false
+		holder := &status.PhaseHolder{}
+		r := NewWithExecutors(Config{Mode: ModePlanReview, PlanFile: planFile, AppConfig: testAppConfig(t)},
+			newRunnerMockLogger("progress.txt"), Executors{}, holder)
+		r.phases.planCreation = testPlanCreationPhase{runFunc: func(context.Context) error {
+			creationCalled = true
+			return nil
+		}}
+		r.phases.planReview = testPlanReviewPhase{runFunc: func(_ context.Context, req phase.PlanReviewRequest) error {
+			got = req
+			return nil
+		}}
+
+		require.NoError(t, r.Run(t.Context()))
+
+		assert.False(t, creationCalled)
+		assert.Equal(t, planFile, got.PlanFile)
+		assert.Equal(t, "overview text here", got.Description)
+		assert.Equal(t, status.PhasePlan, holder.Get())
+	})
+
+	t.Run("missing plan file option is an error", func(t *testing.T) {
+		r := NewWithExecutors(Config{Mode: ModePlanReview, AppConfig: testAppConfig(t)},
+			newRunnerMockLogger("progress.txt"), Executors{}, &status.PhaseHolder{})
+
+		err := r.Run(t.Context())
+
+		require.ErrorContains(t, err, "plan file required")
+	})
+
+	t.Run("unreadable plan file is an error", func(t *testing.T) {
+		r := NewWithExecutors(Config{Mode: ModePlanReview, PlanFile: filepath.Join(t.TempDir(), "nope.md"), AppConfig: testAppConfig(t)},
+			newRunnerMockLogger("progress.txt"), Executors{}, &status.PhaseHolder{})
+
+		err := r.Run(t.Context())
+
+		require.ErrorContains(t, err, "read plan overview")
+	})
+
+	t.Run("review error is wrapped", func(t *testing.T) {
+		r := NewWithExecutors(Config{Mode: ModePlanReview, PlanFile: writeTestPlan(t, "o"), AppConfig: testAppConfig(t)},
+			newRunnerMockLogger("progress.txt"), Executors{}, &status.PhaseHolder{})
+		r.phases.planReview = testPlanReviewPhase{runFunc: func(context.Context, phase.PlanReviewRequest) error {
+			return errors.New("limit")
+		}}
+
+		err := r.Run(t.Context())
+
+		require.ErrorContains(t, err, "plan review phase: limit")
+	})
+}
+
+// TestRunner_PlanReview_SameLoopInBothModes drives the concrete review phase from both modes
+// and checks that the same reviewer question is asked and the same Skip review path ends the loop.
+func TestRunner_PlanReview_SameLoopInBothModes(t *testing.T) {
+	newCollector := func(questions *[]string) *mocks.InputCollectorMock {
+		return &mocks.InputCollectorMock{
+			AskQuestionFunc: func(_ context.Context, question string, _ []string) (string, error) {
+				*questions = append(*questions, question)
+				return "Skip review", nil
+			},
+		}
+	}
+
+	t.Run("plan mode", func(t *testing.T) {
+		var questions []string
+		cfg := Config{Mode: ModePlan, PlanDescription: "desc", AppConfig: testAppConfig(t)}
+		r := NewWithExecutors(cfg, newRunnerMockLogger("progress.txt"), Executors{}, &status.PhaseHolder{})
+		r.SetInputCollector(newCollector(&questions))
+		r.SetPlanFinder(&phasemocks.PlanFinderMock{FindRecentFunc: func(time.Time) string { return "x.md" }})
+		r.phases.planCreation = testPlanCreationPhase{}
+
+		require.NoError(t, r.Run(t.Context()))
+		assert.Equal(t, []string{"Review the plan before implementation?"}, questions)
+	})
+
+	t.Run("plan-review mode", func(t *testing.T) {
+		var questions []string
+		cfg := Config{Mode: ModePlanReview, PlanFile: writeTestPlan(t, "o"), AppConfig: testAppConfig(t)}
+		r := NewWithExecutors(cfg, newRunnerMockLogger("progress.txt"), Executors{}, &status.PhaseHolder{})
+		r.SetInputCollector(newCollector(&questions))
+
+		require.NoError(t, r.Run(t.Context()))
+		assert.Equal(t, []string{"Review the plan before implementation?"}, questions)
+	})
 }

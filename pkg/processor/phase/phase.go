@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/umputun/ralphex/pkg/config"
-	"github.com/umputun/ralphex/pkg/executor"
-	"github.com/umputun/ralphex/pkg/status"
+	"github.com/svtlv/ralphex/pkg/config"
+	"github.com/svtlv/ralphex/pkg/executor"
+	"github.com/svtlv/ralphex/pkg/status"
 )
 
 const (
@@ -20,6 +20,10 @@ const (
 	minPlanIterations      = 5
 	planIterationDivisor   = 5
 )
+
+//go:generate moq -out mocks/plan_review_logger.go -pkg mocks -skip-ensure -fmt goimports . PlanReviewLogger
+//go:generate moq -out mocks/plan_review_prompts.go -pkg mocks -skip-ensure -fmt goimports . PlanReviewPrompts
+//go:generate moq -out mocks/plan_finder.go -pkg mocks -skip-ensure -fmt goimports . PlanFinder
 
 // retryBackoff is the pause before re-running an iteration that timed out or hit
 // a transient retry pattern, applied in the task and review retry loops.
@@ -118,12 +122,29 @@ type GitChecker interface {
 	DiffFingerprint() (string, error)
 }
 
+// PlanReviewLogger records plan review phase progress, findings and Q&A history.
+type PlanReviewLogger interface {
+	Logger
+	PrintSection(section status.Section)
+	PrintAligned(text string)
+	LogQuestion(question string, options []string)
+	LogAnswer(answer string)
+}
+
+// PlanFinder locates the plan file written by the planner during plan creation.
+type PlanFinder interface {
+	// FindRecent returns the most recently modified plan file changed after the given time, or "" when none.
+	FindRecent(startTime time.Time) string
+}
+
 // Deps holds late-bound dependencies shared by phase engines.
 type Deps struct {
 	Git            GitChecker
 	InputCollector InputCollector
 	BreakCh        <-chan struct{}
 	PauseHandler   func(ctx context.Context) bool
+	PlanFinder     PlanFinder
+	RepoState      RepoStateReader
 }
 
 // ExecutionResult is the execution output plus phase-level timeout metadata.
@@ -161,6 +182,12 @@ type ExternalReviewPrompts interface {
 // PlanCreationPrompts renders interactive plan creation prompts.
 type PlanCreationPrompts interface {
 	PlanPrompt() string
+}
+
+// PlanReviewPrompts renders the plan review prompt and the planner revision prompt.
+type PlanReviewPrompts interface {
+	PlanReviewPrompt(planFile, description string) string
+	PlanRevisionPrompt(planFile, description, findings string) string
 }
 
 // FinalizePrompts renders finalize prompts.

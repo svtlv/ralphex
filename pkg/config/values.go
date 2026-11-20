@@ -510,6 +510,7 @@ func (dst *Values) mergeFrom(src *Values) {
 	}
 	dst.mergeExecutionFrom(src)
 	dst.mergeExtraFrom(src)
+	dst.mergePlanReviewFrom(src)
 	dst.mergeNotifyFrom(src)
 }
 
@@ -812,4 +813,8 @@ func expandTilde(path string) string {
 		return path
 	}
 	return home + path[1:] // replace ~ with home, keep the /
+}
+
+// mergePlanReviewFrom merges plan review settings from src into dst.
+func (dst *Values) mergePlanReviewFrom(src *Values) {
 }

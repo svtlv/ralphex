@@ -35,6 +35,7 @@ func Test_defaultsFS_PromptFiles(t *testing.T) {
 		{file: "defaults/prompts/review_second.txt", contains: []string{"{{GOAL}}", "{{PROGRESS_FILE}}", "RALPHEX:REVIEW_DONE", "{{agent:quality}}", "{{agent:implementation}}"}},
 		{file: "defaults/prompts/codex.txt", contains: []string{"{{CODEX_OUTPUT}}", "RALPHEX:CODEX_REVIEW_DONE", "Codex reviewed"}},
 		{file: "defaults/prompts/codex_review.txt", contains: []string{"{{DIFF_INSTRUCTION}}", "{{PROGRESS_FILE}}", "{{PREVIOUS_REVIEW_CONTEXT}}", "{{PLAN_FILE}}"}},
+		{file: "defaults/prompts/plan_review.txt", contains: []string{"{{PLAN_FILE}}", "{{PLAN_DESCRIPTION}}", "{{PROGRESS_FILE}}", "{{DEFAULT_BRANCH}}", "NO ISSUES FOUND", "CRITICAL: <section> - <text>", "read-only", "### Task N:"}},
 	}
 
 	for _, tc := range testCases {
@@ -59,6 +60,7 @@ func Test_defaultsFS_AllFilesPresent(t *testing.T) {
 		"defaults/prompts/review_second.txt",
 		"defaults/prompts/codex.txt",
 		"defaults/prompts/codex_review.txt",
+		"defaults/prompts/plan_review.txt",
 	}
 
 	for _, file := range expectedFiles {
@@ -140,6 +142,7 @@ func TestLoad_PopulatesAllFields(t *testing.T) {
 	assert.NotEmpty(t, cfg.ReviewSecondPrompt)
 	assert.NotEmpty(t, cfg.CodexPrompt)
 	assert.NotEmpty(t, cfg.CodexReviewPrompt)
+	assert.NotEmpty(t, cfg.PlanReviewPrompt)
 }
 
 func TestLoad_WithUserConfig(t *testing.T) {
@@ -945,6 +948,7 @@ color_task = #0000ff
 }
 
 func TestLoad_SymlinkedConfigDir(t *testing.T) {
+	skipIfNoSymlink(t)
 	// simulates real-world scenario where ~/.config/ralphex is symlinked from another repo
 	tmpDir := t.TempDir()
 
@@ -1205,6 +1209,7 @@ notify_timeout_ms = 5000
 }
 
 func TestLoad_SymlinkedLocalDir(t *testing.T) {
+	skipIfNoSymlink(t)
 	// simulates local .ralphex being a symlink to shared project config
 	tmpDir := t.TempDir()
 
