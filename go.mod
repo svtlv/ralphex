@@ -11,10 +11,10 @@ require (
 	github.com/mxschmitt/playwright-go v0.6401.0
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/stretchr/testify v1.12.1
-	github.com/tmaxmax/go-sse v0.11.0
-	golang.org/x/sys v0.49.0
-	golang.org/x/term v0.47.0
-	gopkg.in/ini.v1 v1.67.3
+	github.com/tmaxmax/go-sse v0.12.0
+	golang.org/x/sys v0.50.0
+	golang.org/x/term v0.48.0
+	gopkg.in/ini.v1 v1.68.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
