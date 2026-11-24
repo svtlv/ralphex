@@ -2135,6 +2135,25 @@ func TestCodexExecutor_RunSession_sessionID(t *testing.T) {
 	}
 }
 
+// a failed codex resume of an unknown thread must surface the missing-session text in the error,
+// because the review round fallback matches on it. the error pattern list must not swallow it.
+func TestCodexExecutor_RunSession_MissingSessionReachesError(t *testing.T) {
+	mock := &mockCodexRunner{
+		runFunc: func(_ context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
+			return mockStreams("ERROR: no rollout found for thread id "+resumeTestSessionID+"\n", ""),
+				mockWaitError(errors.New("exit status 1")), nil
+		},
+	}
+	e := &CodexExecutor{runner: mock, ErrorPatterns: []string{"Rate limit"}}
+
+	result := e.RunSession(context.Background(), "p", SessionSpec{ID: resumeTestSessionID, Resume: true})
+
+	require.Error(t, result.Error)
+	var patternErr *PatternMatchError
+	assert.NotErrorAs(t, result.Error, &patternErr)
+	assert.Contains(t, strings.ToLower(result.Error.Error()), "no rollout found for thread id")
+}
+
 func TestCodexExecutor_RunSession_sessionIDOnIdleTimeout(t *testing.T) {
 	stderrR, stderrW := io.Pipe()
 	stdoutR, stdoutW := io.Pipe()

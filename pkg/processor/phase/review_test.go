@@ -277,6 +277,25 @@ func TestReviewPhase_First_WaitRetryResumesSession(t *testing.T) {
 	assert.Equal(t, executor.SessionSpec{ID: "id-1", Resume: true}, (*calls)[1].spec)
 }
 
+func TestReviewPhase_Loop_WaitRetryResumesSession(t *testing.T) {
+	sessions, calls := scriptedSessions(t, true, []string{"id-1"},
+		executor.Result{Error: &executor.LimitPatternError{Pattern: "limit", HelpCmd: "usage"}},
+		executor.Result{Output: "done", Signal: status.ReviewDone})
+	log := newMockLogger("progress.txt")
+	phase, _ := reviewPhaseFromRunner(t, reviewPhaseTestOpts{cfg: Config{MaxIterations: 50}, exec: sessions, log: log})
+	phase.git.deps.Git = headSequence(testHeadA)
+	phase.policy = &waitRetryPolicy{testPolicy: newScriptedTestPolicy(log), attempts: 2}
+
+	err := phase.Loop(t.Context(), "")
+
+	require.NoError(t, err)
+	require.Len(t, *calls, 2)
+	assert.Equal(t, "second review prompt", (*calls)[0].prompt)
+	assert.Equal(t, executor.SessionSpec{ID: "id-1"}, (*calls)[0].spec)
+	assert.Equal(t, resumeRoundPrompt, (*calls)[1].prompt)
+	assert.Equal(t, executor.SessionSpec{ID: "id-1", Resume: true}, (*calls)[1].spec)
+}
+
 func TestReviewPhase_Loop_TimeoutResumesOnceThenNewSession(t *testing.T) {
 	sessions, calls := scriptedSessions(t, true, []string{"id-1", "id-2"},
 		executor.Result{}, executor.Result{}, executor.Result{}, executor.Result{Signal: status.ReviewDone})

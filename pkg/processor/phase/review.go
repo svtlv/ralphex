@@ -76,7 +76,6 @@ func (p *ReviewPhase) Loop(ctx context.Context, prefix string) error {
 			round = newReviewRound(ctx, p.exec, p.sessionTimeout())
 			roundHead = p.headHash()
 		}
-		headBefore := roundHead
 
 		execResult := p.policy.Run(ctx, round.Run, p.prompts.SecondReviewPrompt(prefix), execName)
 		result := execResult.Result
@@ -109,8 +108,8 @@ func (p *ReviewPhase) Loop(ctx context.Context, prefix string) error {
 		}
 
 		round = nil // the iteration ended without a timeout, the next one starts a new round
-		if headBefore != "" {
-			if headAfter := p.headHash(); headAfter == headBefore {
+		if roundHead != "" {
+			if headAfter := p.headHash(); headAfter == roundHead {
 				p.log.Print("%s review complete - no changes detected", execName)
 				return nil
 			}

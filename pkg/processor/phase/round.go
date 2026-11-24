@@ -23,10 +23,6 @@ emit a signal only where those instructions require one, and otherwise end as th
 // "no rollout found for thread id ..." on stderr.
 var missingSessionMarkers = []string{"no conversation found", "no rollout found for thread id"}
 
-// timeoutsBeforeNewSession is the number of timeouts after which a session is dropped.
-// the first timeout keeps the session so the next call resumes it, the second drops it.
-const timeoutsBeforeNewSession = 2
-
 // reviewRound owns the session of one review round. the first Run starts a session with the
 // full prompt, later Runs resume it with resumeRoundPrompt, so a retry does not repeat the
 // research. the id lives in memory only, nothing is written to the progress log.
@@ -37,7 +33,7 @@ type reviewRound struct {
 	sessionTimeout time.Duration
 
 	id       string // session id, empty when no session is known
-	timeouts int    // timeouts seen in the current session
+	timedOut bool   // the current session already timed out once
 }
 
 // newReviewRound creates the helper for one review round. parent is the phase context and
@@ -80,18 +76,19 @@ func (r *reviewRound) noteTimedOut() {
 	if r.sess == nil || r.id == "" {
 		return
 	}
-	r.timeouts++
-	if r.timeouts >= timeoutsBeforeNewSession {
+	if r.timedOut {
 		r.id = ""
-		r.timeouts = 0
+		r.timedOut = false
+		return
 	}
+	r.timedOut = true
 }
 
 // runNew starts a new session with the full prompt and remembers its id.
 func (r *reviewRound) runNew(ctx context.Context, prompt string) executor.Result {
 	id := r.sess.NewSessionID()
 	result := r.sess.RunSession(ctx, prompt, executor.SessionSpec{ID: id})
-	r.timeouts = 0
+	r.timedOut = false
 	r.id = id
 	if result.SessionID != "" {
 		r.id = result.SessionID
@@ -115,9 +112,9 @@ func (r *reviewRound) shouldFallBack(result executor.Result) bool {
 	if _, ok := errors.AsType[*executor.RetryPatternError](result.Error); ok {
 		return false
 	}
-	text := strings.ToLower(strings.Join([]string{
-		result.Error.Error(), result.Output, result.RecentText, result.DiagnosticText,
-	}, "\n"))
+	// only text the CLI produced itself counts. Output and RecentText hold the model's own words,
+	// which can quote a marker when ralphex reviews its own source.
+	text := strings.ToLower(result.Error.Error() + "\n" + result.DiagnosticText)
 	for _, marker := range missingSessionMarkers {
 		if strings.Contains(text, marker) {
 			return true

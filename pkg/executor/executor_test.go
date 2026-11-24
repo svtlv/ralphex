@@ -2433,6 +2433,25 @@ func TestClaudeExecutor_Run_NoSessionID(t *testing.T) {
 	assert.Empty(t, result.SessionID)
 }
 
+// a failed claude resume of an unknown session must put the missing-session text into
+// DiagnosticText, because the review round fallback matches on it. the error is a plain error.
+func TestClaudeExecutor_RunSession_MissingSessionReachesDiagnosticText(t *testing.T) {
+	mock := &mocks.CommandRunnerMock{
+		RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
+			return strings.NewReader("No conversation found with session ID: 11111111-2222-4333-8444-555555555555\n"),
+				func() error { return errors.New("exit status 1") }, nil
+		},
+	}
+	e := &ClaudeExecutor{cmdRunner: mock, ErrorPatterns: []string{"API Error: 500"}}
+
+	result := e.RunSession(context.Background(), "p", SessionSpec{ID: "11111111-2222-4333-8444-555555555555", Resume: true})
+
+	require.Error(t, result.Error)
+	var patternErr *PatternMatchError
+	assert.NotErrorAs(t, result.Error, &patternErr)
+	assert.Contains(t, result.DiagnosticText, "No conversation found")
+}
+
 func TestClaudeExecutor_RunSession_StartError(t *testing.T) {
 	e := &ClaudeExecutor{cmdRunner: &mocks.CommandRunnerMock{
 		RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {

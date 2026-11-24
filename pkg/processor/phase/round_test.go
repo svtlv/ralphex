@@ -158,12 +158,10 @@ func TestReviewRound_FallbackOnMissingSession(t *testing.T) {
 		name   string
 		result executor.Result
 	}{
-		{name: "claude message in output", result: executor.Result{
-			Output: "No conversation found with session ID: id-1", Error: errors.New("exit status 1")}},
 		{name: "claude message in diagnostic text", result: executor.Result{
-			DiagnosticText: "no conversation found with session id", Error: errors.New("exit status 1")}},
-		{name: "claude message in recent text", result: executor.Result{
-			RecentText: "NO CONVERSATION FOUND", Error: errors.New("exit status 1")}},
+			DiagnosticText: "No conversation found with session ID: id-1", Error: errors.New("exit status 1")}},
+		{name: "claude message is case-insensitive", result: executor.Result{
+			DiagnosticText: "NO CONVERSATION FOUND", Error: errors.New("exit status 1")}},
 		{name: "codex message in error stderr tail", result: executor.Result{
 			Error: errors.New("codex exited with error: exit status 1\nstderr: ERROR: no rollout found for thread id abc")}},
 	}
@@ -200,15 +198,19 @@ func TestReviewRound_NoFallback(t *testing.T) {
 		{name: "unrelated error text", parent: context.Background(),
 			result: executor.Result{Output: "something else", Error: errors.New("exit status 1")}},
 		{name: "marker without error", parent: context.Background(),
-			result: executor.Result{Output: "No conversation found"}},
+			result: executor.Result{DiagnosticText: "No conversation found"}},
+		{name: "model output quotes the marker", parent: context.Background(),
+			result: executor.Result{Output: "round.go matches No conversation found", Error: errors.New("exit status 1")}},
+		{name: "recent model text quotes the marker", parent: context.Background(),
+			result: executor.Result{RecentText: "no rollout found for thread id", Error: errors.New("signal: killed")}},
 		{name: "pattern error", parent: context.Background(),
-			result: executor.Result{Output: "No conversation found", Error: &executor.PatternMatchError{Pattern: "x"}}},
+			result: executor.Result{DiagnosticText: "No conversation found", Error: &executor.PatternMatchError{Pattern: "x"}}},
 		{name: "limit error", parent: context.Background(),
-			result: executor.Result{Output: "No conversation found", Error: &executor.LimitPatternError{Pattern: "x"}}},
+			result: executor.Result{DiagnosticText: "No conversation found", Error: &executor.LimitPatternError{Pattern: "x"}}},
 		{name: "retry error", parent: context.Background(),
-			result: executor.Result{Output: "No conversation found", Error: &executor.RetryPatternError{Pattern: "x"}}},
+			result: executor.Result{DiagnosticText: "No conversation found", Error: &executor.RetryPatternError{Pattern: "x"}}},
 		{name: "phase context canceled", parent: canceled,
-			result: executor.Result{Output: "No conversation found", Error: errors.New("context canceled")}},
+			result: executor.Result{DiagnosticText: "No conversation found", Error: errors.New("context canceled")}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -233,7 +235,7 @@ func TestReviewRound_FallbackRunsUnderFreshTimeout(t *testing.T) {
 	t.Run("timeout configured", func(t *testing.T) {
 		mock, calls := scriptedSessions(t, true, []string{"id-1", "id-2"},
 			executor.Result{},
-			executor.Result{Output: "No conversation found", Error: errors.New("exit status 1")},
+			executor.Result{DiagnosticText: "No conversation found", Error: errors.New("exit status 1")},
 			executor.Result{Output: "fresh"})
 		round := newReviewRound(t.Context(), mock, time.Minute)
 
@@ -250,7 +252,7 @@ func TestReviewRound_FallbackRunsUnderFreshTimeout(t *testing.T) {
 	t.Run("no timeout configured", func(t *testing.T) {
 		mock, calls := scriptedSessions(t, true, []string{"id-1", "id-2"},
 			executor.Result{},
-			executor.Result{Output: "No conversation found", Error: errors.New("exit status 1")},
+			executor.Result{DiagnosticText: "No conversation found", Error: errors.New("exit status 1")},
 			executor.Result{})
 		round := newReviewRound(t.Context(), mock, 0)
 
@@ -266,7 +268,7 @@ func TestReviewRound_FallbackRunsUnderFreshTimeout(t *testing.T) {
 func TestReviewRound_FallbackFollowedByResume(t *testing.T) {
 	mock, calls := scriptedSessions(t, true, []string{"id-1", "id-2"},
 		executor.Result{},
-		executor.Result{Output: "No conversation found", Error: errors.New("exit status 1")},
+		executor.Result{DiagnosticText: "No conversation found", Error: errors.New("exit status 1")},
 		executor.Result{},
 		executor.Result{})
 	round := newReviewRound(t.Context(), mock, 0)
@@ -276,6 +278,25 @@ func TestReviewRound_FallbackFollowedByResume(t *testing.T) {
 	round.Run(t.Context(), "full") // resumes id-2
 
 	require.Len(t, *calls, 4)
+	assert.Equal(t, executor.SessionSpec{ID: "id-2", Resume: true}, (*calls)[3].spec)
+	assert.Equal(t, resumeRoundPrompt, (*calls)[3].prompt)
+}
+
+func TestReviewRound_FallbackSessionTimesOutThenResumes(t *testing.T) {
+	mock, calls := scriptedSessions(t, true, []string{"id-1", "id-2"},
+		executor.Result{},
+		executor.Result{DiagnosticText: "No conversation found", Error: errors.New("exit status 1")},
+		executor.Result{Error: errors.New("signal: killed")}, // fallback session id-2 times out
+		executor.Result{})
+	round := newReviewRound(t.Context(), mock, 0)
+
+	round.Run(t.Context(), "full")
+	round.Run(t.Context(), "full") // resume fails, fallback starts id-2 and times out
+	round.noteTimedOut()           // first timeout of id-2 keeps it
+	round.Run(t.Context(), "full") // resumes id-2
+
+	require.Len(t, *calls, 4)
+	assert.Equal(t, executor.SessionSpec{ID: "id-2"}, (*calls)[2].spec)
 	assert.Equal(t, executor.SessionSpec{ID: "id-2", Resume: true}, (*calls)[3].spec)
 	assert.Equal(t, resumeRoundPrompt, (*calls)[3].prompt)
 }
