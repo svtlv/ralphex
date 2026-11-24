@@ -63,14 +63,14 @@ Scope (from the backlog item `docs/backlog/claude-review-rounds-repeat-research.
 - Modify: `pkg/executor/codex.go`
 - Modify: `pkg/executor/codex_test.go`
 
-- [ ] record the session id from `processStderr` in `stderrResult` (the existing `sessionIDCh` flow stays) and set `Result.SessionID` on every return path, including idle-timeout and error returns
-- [ ] add `(*CodexExecutor).RunSession(ctx, prompt, spec)`; `Run` calls it with an empty spec
-- [ ] with Resume, build `codex exec <overrides> --sandbox <mode> -c ... resume <id> -`, with the prompt still sent through stdin. Keep the model, effort, sandbox and bypass flags the same as a fresh run
-- [ ] add `CanResume()` (command empty or base name `codex` or `codex.exe`, so an explicit path such as `C:\Users\me\.codex\bin\codex.exe` works; split the path on both `/` and `\`; a wrapper such as `codex-agrouter.sh` or `codex-as-claude.sh` returns false) and `NewSessionID()` (returns `""`, because codex assigns the id)
-- [ ] rollout reader on resume: codex appends to the existing rollout file of the session, and `tailRolloutFile` starts at byte zero, so it would replay old output into the progress log. Before a resume run, find the rollout file for the id and record its size. Start `tailRolloutFile` at that offset. A fresh run still starts at zero. If the file is not found before the run, start at zero
-- [ ] tests: argv for fresh and resume runs, `Result.SessionID` filled from a stubbed stderr banner on success, error and idle-timeout paths, `CanResume` cases including `codex`, `/usr/local/bin/codex`, `C:\...\codex.exe` and `.ralphex/scripts/codex-agrouter.sh` returning false
-- [ ] test: a rollout file with old records and a resume run with new records appended forwards only the new records to the output handler
-- [ ] run project test suite - must pass before task 3
+- [x] record the session id from `processStderr` in `stderrResult` (the existing `sessionIDCh` flow stays) and set `Result.SessionID` on every return path, including idle-timeout and error returns
+- [x] add `(*CodexExecutor).RunSession(ctx, prompt, spec)`; `Run` calls it with an empty spec
+- [x] with Resume, build `codex exec <overrides> --sandbox <mode> -c ... resume <id> -`, with the prompt still sent through stdin. Keep the model, effort, sandbox and bypass flags the same as a fresh run
+- [x] add `CanResume()` (command empty or base name `codex` or `codex.exe`, so an explicit path such as `C:\Users\me\.codex\bin\codex.exe` works; split the path on both `/` and `\`; a wrapper such as `codex-agrouter.sh` or `codex-as-claude.sh` returns false) and `NewSessionID()` (returns `""`, because codex assigns the id)
+- [x] rollout reader on resume: codex appends to the existing rollout file of the session, and `tailRolloutFile` starts at byte zero, so it would replay old output into the progress log. Before a resume run, find the rollout file for the id and record its size. Start `tailRolloutFile` at that offset. A fresh run still starts at zero. If the file is not found before the run, start at zero
+- [x] tests: argv for fresh and resume runs, `Result.SessionID` filled from a stubbed stderr banner on success, error and idle-timeout paths, `CanResume` cases including `codex`, `/usr/local/bin/codex`, `C:\...\codex.exe` and `.ralphex/scripts/codex-agrouter.sh` returning false
+- [x] test: a rollout file with old records and a resume run with new records appended forwards only the new records to the output handler
+- [x] run project test suite - must pass before task 3
 
 ### Task 3: Per-round session helper
 

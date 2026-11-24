@@ -1907,7 +1907,7 @@ func TestCodexExecutor_tailRolloutFile_streamsAssistantMessages(t *testing.T) {
 	tailDone := make(chan struct{})
 	go func() {
 		defer close(tailDone)
-		e.tailRolloutFile(ctx, sessionID, nil)
+		e.tailRolloutFile(ctx, sessionID, 0, nil)
 	}()
 
 	// wait briefly for initial drain (assistant text + reasoning title)
@@ -2038,4 +2038,256 @@ func TestCodexExecutor_firstRunHeaderEmission(t *testing.T) {
 		// second run emits nothing to stderr display (reasoning comes from the rollout).
 		assert.Empty(t, secondCaptured, "second run has nothing to forward from stderr")
 	})
+}
+
+const resumeTestSessionID = "019e3bbe-9788-79f1-b668-abcdefabcdef"
+
+// codexBanner returns a stderr header block that carries resumeTestSessionID.
+func codexBanner() string {
+	return "--------\nmodel: gpt-5.5\nsession id: " + resumeTestSessionID + "\n--------\n"
+}
+
+func TestCodexExecutor_RunSession_args(t *testing.T) {
+	t.Setenv("RALPHEX_DOCKER", "")
+
+	tests := []struct {
+		name       string
+		spec       SessionSpec
+		wantSuffix []string
+		wantNoWord bool // true when "resume" must not appear in argv
+	}{
+		{name: "empty spec is a fresh run", spec: SessionSpec{}, wantNoWord: true},
+		{name: "id without resume is a fresh run", spec: SessionSpec{ID: resumeTestSessionID}, wantNoWord: true},
+		{name: "resume without id is a fresh run", spec: SessionSpec{Resume: true}, wantNoWord: true},
+		{
+			name:       "resume with id appends resume subcommand",
+			spec:       SessionSpec{ID: resumeTestSessionID, Resume: true},
+			wantSuffix: []string{"resume", resumeTestSessionID, "-"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var capturedArgs []string
+			mock := &mockCodexRunner{
+				runFunc: func(_ context.Context, _ string, args ...string) (CodexStreams, func() error, error) {
+					capturedArgs = args
+					return mockStreams("", "ok"), mockWait(), nil
+				},
+			}
+			e := &CodexExecutor{runner: mock, Model: "gpt-5.5", ReasoningEffort: "high", MultiAgent: true, Sandbox: "danger-full-access"}
+			result := e.RunSession(context.Background(), "continue", tc.spec)
+			require.NoError(t, result.Error)
+
+			assert.Equal(t, "exec", capturedArgs[0])
+			joined := strings.Join(capturedArgs, " ")
+			for _, want := range []string{"--dangerously-bypass-approvals-and-sandbox", "--sandbox danger-full-access", `-c model="gpt-5.5"`, "-c model_reasoning_effort=high", "stream_idle_timeout_ms=3600000"} {
+				assert.Contains(t, joined, want, "flags stay the same as a fresh run")
+			}
+			if tc.wantNoWord {
+				assert.NotContains(t, capturedArgs, "resume")
+				return
+			}
+			assert.Equal(t, tc.wantSuffix, capturedArgs[len(capturedArgs)-len(tc.wantSuffix):], "resume <id> - ends the argv")
+			assert.NotContains(t, capturedArgs, "continue", "prompt goes through stdin, not argv")
+		})
+	}
+}
+
+func TestCodexExecutor_RunSession_sessionID(t *testing.T) {
+	tests := []struct {
+		name   string
+		spec   SessionSpec
+		stderr string
+		wait   error
+		idle   time.Duration
+		want   string
+	}{
+		{name: "success reads banner id", stderr: codexBanner(), want: resumeTestSessionID},
+		{name: "error path keeps banner id", stderr: codexBanner(), wait: errors.New("exit status 1"), want: resumeTestSessionID},
+		{name: "no banner and fresh run gives empty id", stderr: "", want: ""},
+		{
+			name:   "resume without banner falls back to spec id",
+			spec:   SessionSpec{ID: resumeTestSessionID, Resume: true},
+			stderr: "",
+			want:   resumeTestSessionID,
+		},
+		{
+			name:   "fresh run ignores spec id",
+			spec:   SessionSpec{ID: "11111111-1111-4111-8111-111111111111"},
+			stderr: codexBanner(),
+			want:   resumeTestSessionID,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockCodexRunner{
+				runFunc: func(_ context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
+					return mockStreams(tc.stderr, "out"), mockWaitError(tc.wait), nil
+				},
+			}
+			e := &CodexExecutor{runner: mock}
+			result := e.RunSession(context.Background(), "p", tc.spec)
+			assert.Equal(t, tc.want, result.SessionID)
+			if tc.wait != nil {
+				require.Error(t, result.Error)
+			}
+		})
+	}
+}
+
+func TestCodexExecutor_RunSession_sessionIDOnIdleTimeout(t *testing.T) {
+	stderrR, stderrW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	mock := &mockCodexRunner{
+		runFunc: func(ctx context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
+			go func() {
+				defer stderrW.Close()
+				defer stdoutW.Close()
+				_, _ = stderrW.Write([]byte(codexBanner()))
+				<-ctx.Done()
+			}()
+			return CodexStreams{Stderr: stderrR, Stdout: stdoutR}, func() error {
+				<-ctx.Done()
+				return errors.New("signal: killed")
+			}, nil
+		},
+	}
+	e := &CodexExecutor{runner: mock, IdleTimeout: 100 * time.Millisecond}
+	result := e.RunSession(context.Background(), "p", SessionSpec{})
+	require.NoError(t, result.Error)
+	assert.True(t, result.IdleTimedOut)
+	assert.Equal(t, resumeTestSessionID, result.SessionID, "idle-timeout return keeps the session id")
+}
+
+func TestCodexExecutor_RunSession_startErrorKeepsResumeID(t *testing.T) {
+	mock := &mockCodexRunner{
+		runFunc: func(_ context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
+			return CodexStreams{}, nil, errors.New("not found")
+		},
+	}
+	e := &CodexExecutor{runner: mock}
+	result := e.RunSession(context.Background(), "p", SessionSpec{ID: resumeTestSessionID, Resume: true})
+	require.Error(t, result.Error)
+	assert.Equal(t, resumeTestSessionID, result.SessionID)
+
+	fresh := e.RunSession(context.Background(), "p", SessionSpec{})
+	assert.Empty(t, fresh.SessionID)
+}
+
+func TestCodexExecutor_CanResume(t *testing.T) {
+	tests := []struct {
+		command string
+		want    bool
+	}{
+		{command: "", want: true},
+		{command: "codex", want: true},
+		{command: "/usr/local/bin/codex", want: true},
+		{command: `C:\Users\me\.codex\bin\codex.exe`, want: true},
+		{command: "CODEX.EXE", want: true},
+		{command: ".ralphex/scripts/codex-agrouter.sh", want: false},
+		{command: "scripts/codex-as-claude/codex-as-claude.sh", want: false},
+		{command: "agrouter", want: false},
+		{command: "my-codex", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.command, func(t *testing.T) {
+			e := &CodexExecutor{Command: tc.command}
+			assert.Equal(t, tc.want, e.CanResume())
+		})
+	}
+}
+
+func TestCodexExecutor_NewSessionID(t *testing.T) {
+	assert.Empty(t, (&CodexExecutor{}).NewSessionID(), "codex assigns its own session id")
+}
+
+func TestCodexExecutor_rolloutSize(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	e := &CodexExecutor{}
+
+	assert.Zero(t, e.rolloutSize(resumeTestSessionID), "missing file starts at zero")
+
+	dir := filepath.Join(home, ".codex", "sessions", "2026", "05", "18")
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	path := filepath.Join(dir, "rollout-2026-05-18T10-40-06-"+resumeTestSessionID+".jsonl")
+	require.NoError(t, os.WriteFile(path, []byte("12345"), 0o600))
+	assert.Equal(t, int64(5), e.rolloutSize(resumeTestSessionID))
+}
+
+func TestCodexExecutor_RunSession_resumeTailsOnlyNewRecords(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("RALPHEX_DOCKER", "")
+
+	dir := filepath.Join(home, ".codex", "sessions", "2026", "05", "18")
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	path := filepath.Join(dir, "rollout-2026-05-18T10-40-06-"+resumeTestSessionID+".jsonl")
+	record := func(text string) string {
+		return `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"` + text + `"}]}}` + "\n"
+	}
+	require.NoError(t, os.WriteFile(path, []byte(record("old research")), 0o600))
+
+	var (
+		mu       sync.Mutex
+		captured []string
+	)
+	mock := &mockCodexRunner{
+		runFunc: func(_ context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
+			// the resumed process appends its new records to the same rollout file
+			f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // test temp file
+			require.NoError(t, err)
+			_, err = f.WriteString(record("new work"))
+			require.NoError(t, err)
+			require.NoError(t, f.Close())
+			return mockStreams(codexBanner(), "done"), mockWait(), nil
+		},
+	}
+	e := &CodexExecutor{runner: mock, OutputHandler: func(text string) {
+		mu.Lock()
+		defer mu.Unlock()
+		captured = append(captured, text)
+	}}
+
+	result := e.RunSession(context.Background(), "continue", SessionSpec{ID: resumeTestSessionID, Resume: true})
+	require.NoError(t, result.Error)
+
+	mu.Lock()
+	defer mu.Unlock()
+	joined := strings.Join(captured, "\n")
+	assert.Contains(t, joined, "new work")
+	assert.NotContains(t, joined, "old research", "records before the resume offset must not replay")
+}
+
+func TestCodexExecutor_tailRolloutFile_offset(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := filepath.Join(home, ".codex", "sessions", "2026", "05", "18")
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	path := filepath.Join(dir, "rollout-2026-05-18T10-40-06-"+resumeTestSessionID+".jsonl")
+	first := `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first"}]}}` + "\n"
+	second := `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"second"}]}}` + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(first+second), 0o600))
+
+	tests := []struct {
+		name   string
+		offset int64
+		want   []string
+	}{
+		{name: "zero offset replays everything", offset: 0, want: []string{"first", "second"}},
+		{name: "offset skips earlier records", offset: int64(len(first)), want: []string{"second"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			e := &CodexExecutor{OutputHandler: func(text string) { got = append(got, text) }}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel() // canceled up front: the tailer still does its final drain
+			e.tailRolloutFile(ctx, resumeTestSessionID, tc.offset, nil)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }
