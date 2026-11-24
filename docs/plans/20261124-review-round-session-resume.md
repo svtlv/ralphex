@@ -47,15 +47,15 @@ Scope (from the backlog item `docs/backlog/claude-review-rounds-repeat-research.
 - Modify: `pkg/executor/executor.go`
 - Modify: `pkg/executor/executor_test.go`
 
-- [ ] add `SessionSpec{ID string; Resume bool}` and `Result.SessionID string` to the executor package
-- [ ] add `(*ClaudeExecutor).RunSession(ctx, prompt, spec)`; `Run` calls it with an empty spec, so the default argv stays the same
-- [ ] with an ID and no Resume, append `--session-id <id>`. With Resume, append `--resume <id>`. Strip any `--session-id` / `--resume` already in configured args with `stripFlag`. Append them next to `--model`/`--effort`, before `--print`, so they land after the `--` separator when a launcher is used
-- [ ] add `CanResume()`. It is true when configured args do not contain `--no-session-persistence` and one of these holds: (a) the command is empty or its base name (minus `.exe`/`.cmd`/`.bat`) is `claude`; (b) the base name is `agrouter` and the configured args start with `exec claude` (the first two fields). Every other command returns false. Never add `--no-session-persistence` ourselves
-- [ ] add `NewSessionID()`: random UUID v4 from `crypto/rand`; return the ID in `Result.SessionID`
-- [ ] tests (table-driven): argv for new / resume / empty spec, flag de-duplication, UUID format and uniqueness
-- [ ] tests (table-driven): `CanResume` for `claude`, `claude.cmd`, `/path/claude`, `codex-as-claude.sh`, `agrouter` with `exec claude ...`, `agrouter` with other args (`exec codex`, empty args), `/opt/bin/agrouter` with `exec claude`, and args containing `--no-session-persistence`
-- [ ] test for the agrouter argv: command `agrouter`, args `exec claude --doc=CLAUDE.md --doc=llms.txt -- --dangerously-skip-permissions --output-format stream-json --verbose` with a model, effort and a resume spec. Assert that `--resume <id>` and `--print` come after the `--` separator, and that `exec claude --doc=... --` stays unchanged before it
-- [ ] run project test suite - must pass before task 2
+- [x] add `SessionSpec{ID string; Resume bool}` and `Result.SessionID string` to the executor package
+- [x] add `(*ClaudeExecutor).RunSession(ctx, prompt, spec)`; `Run` calls it with an empty spec, so the default argv stays the same
+- [x] with an ID and no Resume, append `--session-id <id>`. With Resume, append `--resume <id>`. Strip any `--session-id` / `--resume` already in configured args with `stripFlag`. Append them next to `--model`/`--effort`, before `--print`, so they land after the `--` separator when a launcher is used
+- [x] add `CanResume()`. It is true when configured args do not contain `--no-session-persistence` and one of these holds: (a) the command is empty or its base name (minus `.exe`/`.cmd`/`.bat`) is `claude`; (b) the base name is `agrouter` and the configured args start with `exec claude` (the first two fields). Every other command returns false. Never add `--no-session-persistence` ourselves
+- [x] add `NewSessionID()`: random UUID v4 from `crypto/rand`; return the ID in `Result.SessionID`
+- [x] tests (table-driven): argv for new / resume / empty spec, flag de-duplication, UUID format and uniqueness
+- [x] tests (table-driven): `CanResume` for `claude`, `claude.cmd`, `/path/claude`, `codex-as-claude.sh`, `agrouter` with `exec claude ...`, `agrouter` with other args (`exec codex`, empty args), `/opt/bin/agrouter` with `exec claude`, and args containing `--no-session-persistence`
+- [x] test for the agrouter argv: command `agrouter`, args `exec claude --doc=CLAUDE.md --doc=llms.txt -- --dangerously-skip-permissions --output-format stream-json --verbose` with a model, effort and a resume spec. Assert that `--resume <id>` and `--print` come after the `--` separator, and that `exec claude --doc=... --` stays unchanged before it
+- [x] run project test suite - must pass before task 2
 
 ### Task 2: Codex executor resume
 

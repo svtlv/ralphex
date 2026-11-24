@@ -3,11 +3,13 @@ package executor
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -25,6 +27,14 @@ type Result struct {
 	Signal         string // detected signal (COMPLETED, FAILED, etc.) or empty
 	Error          error  // execution error if any
 	IdleTimedOut   bool   // true when idle timeout fired (derived context canceled, parent alive)
+	SessionID      string // session id the run used or created; empty when the executor has none
+}
+
+// SessionSpec asks an executor to run inside a named session. the zero value means a plain
+// run with no session handling, which keeps the default argv unchanged.
+type SessionSpec struct {
+	ID     string // session id; empty means no session handling
+	Resume bool   // true resumes the session ID, false starts a new session named ID
 }
 
 // recentBlockCount bounds both recent surfaced output and trusted diagnostics.
@@ -341,25 +351,27 @@ func (e *ClaudeExecutor) now() time.Time {
 
 // Run executes claude CLI with the given prompt and parses streaming JSON output.
 func (e *ClaudeExecutor) Run(ctx context.Context, prompt string) Result {
+	return e.RunSession(ctx, prompt, SessionSpec{})
+}
+
+// RunSession executes claude CLI like Run, inside the session named by spec. with an ID and no
+// Resume it starts a new session named ID (--session-id); with Resume it continues that session
+// (--resume). an empty spec leaves the argv unchanged. Result.SessionID carries spec.ID back.
+func (e *ClaudeExecutor) RunSession(ctx context.Context, prompt string, spec SessionSpec) Result {
+	result := e.runClaude(ctx, prompt, spec)
+	result.SessionID = spec.ID
+	return result
+}
+
+// runClaude builds the argv and runs one claude process.
+func (e *ClaudeExecutor) runClaude(ctx context.Context, prompt string, spec SessionSpec) Result {
 	cmd := e.Command
 	if cmd == "" {
 		cmd = "claude"
 	}
 
 	// build args from configured string or use defaults
-	var args []string
-	switch {
-	case e.ArgsSet:
-		args = splitArgs(e.Args)
-	case e.Args != "":
-		args = splitArgs(e.Args)
-	default:
-		args = []string{
-			"--dangerously-skip-permissions",
-			"--output-format", "stream-json",
-			"--verbose",
-		}
-	}
+	args := e.configuredArgs()
 	// inject --model flag if a model override is configured;
 	// strip any existing --model from args to avoid duplicate/conflicting flags
 	if e.Model != "" {
@@ -371,6 +383,17 @@ func (e *ClaudeExecutor) Run(ctx context.Context, prompt string) Result {
 	if e.Effort != "" {
 		args = stripFlag(args, "--effort")
 		args = append(args, "--effort", e.Effort)
+	}
+	// inject the session flag next to --model/--effort so it stays after any "--" separator a
+	// launcher such as agrouter uses; strip configured copies to avoid conflicting flags
+	if spec.ID != "" {
+		args = stripFlag(args, "--session-id")
+		args = stripFlag(args, "--resume")
+		if spec.Resume {
+			args = append(args, "--resume", spec.ID)
+		} else {
+			args = append(args, "--session-id", spec.ID)
+		}
 	}
 	// always append --print to enable non-interactive mode; mirrors old -p flag that was
 	// always appended. wrapper scripts ignore unknown flags via '*) shift ;;' catch-all.
@@ -412,6 +435,63 @@ func (e *ClaudeExecutor) Run(ctx context.Context, prompt string) Result {
 		parentErr:    ctx.Err(),
 		idleTimedOut: e.IdleTimeout > 0 && execCtx.Err() != nil && ctx.Err() == nil,
 	})
+}
+
+// CanResume reports whether this executor can resume a claude session. it is true only for the
+// real claude CLI and for the agrouter launcher running claude (args start with "exec claude").
+// wrapper scripts such as codex-as-claude.sh never resume. a configured --no-session-persistence
+// disables resume, because the session is then never stored.
+func (e *ClaudeExecutor) CanResume() bool {
+	args := e.configuredArgs()
+	if slices.Contains(args, "--no-session-persistence") {
+		return false
+	}
+	switch commandBaseName(e.Command) {
+	case "", "claude":
+		return true
+	case "agrouter":
+		return len(args) >= 2 && args[0] == "exec" && args[1] == "claude"
+	default:
+		return false
+	}
+}
+
+// NewSessionID returns a new random UUID v4 for a claude session.
+func (e *ClaudeExecutor) NewSessionID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ""
+	}
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // RFC 4122 variant
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// configuredArgs returns the args the executor starts from, before model, effort, session
+// and --print injection.
+func (e *ClaudeExecutor) configuredArgs() []string {
+	if e.ArgsSet || e.Args != "" {
+		return splitArgs(e.Args)
+	}
+	return []string{
+		"--dangerously-skip-permissions",
+		"--output-format", "stream-json",
+		"--verbose",
+	}
+}
+
+// commandBaseName returns the lowercase base name of a command path without a .exe, .cmd or
+// .bat extension. it splits on both / and \ so a Windows path works on any host.
+func commandBaseName(command string) string {
+	name := command
+	if i := strings.LastIndexAny(name, `/\`); i >= 0 {
+		name = name[i+1:]
+	}
+	name = strings.ToLower(name)
+	for _, ext := range []string{".exe", ".cmd", ".bat"} {
+		name = strings.TrimSuffix(name, ext)
+	}
+	return name
 }
 
 // claudeRunOutcome records process state that is not available while parsing the

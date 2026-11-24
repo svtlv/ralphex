@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -2370,4 +2371,178 @@ func echoScript(t *testing.T, msg string) string {
 	path := filepath.Join(dir, "echo.sh")
 	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\necho "+msg+"\n"), 0o700)) //nolint:gosec // script must be executable
 	return path
+}
+
+// captureClaudeArgs runs the executor once against a stub runner and returns the command and argv.
+func captureClaudeArgs(t *testing.T, e *ClaudeExecutor, spec SessionSpec) (string, []string, Result) {
+	t.Helper()
+	var capturedCmd string
+	var capturedArgs []string
+	e.cmdRunner = &mocks.CommandRunnerMock{
+		RunFunc: func(_ context.Context, name string, args ...string) (io.Reader, func() error, error) {
+			capturedCmd = name
+			capturedArgs = args
+			return strings.NewReader(`{"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}`), func() error { return nil }, nil
+		},
+	}
+	result := e.RunSession(context.Background(), "prompt", spec)
+	require.NoError(t, result.Error)
+	return capturedCmd, capturedArgs, result
+}
+
+func TestClaudeExecutor_RunSession_Args(t *testing.T) {
+	const id = "11111111-2222-4333-8444-555555555555"
+	tests := []struct {
+		name string
+		exec ClaudeExecutor
+		spec SessionSpec
+		want []string
+	}{
+		{name: "empty spec keeps default argv", exec: ClaudeExecutor{}, spec: SessionSpec{},
+			want: []string{"--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose", "--print"}},
+		{name: "new session", exec: ClaudeExecutor{Args: "--verbose"}, spec: SessionSpec{ID: id},
+			want: []string{"--verbose", "--session-id", id, "--print"}},
+		{name: "resume", exec: ClaudeExecutor{Args: "--verbose"}, spec: SessionSpec{ID: id, Resume: true},
+			want: []string{"--verbose", "--resume", id, "--print"}},
+		{name: "resume flag without id is ignored", exec: ClaudeExecutor{Args: "--verbose"}, spec: SessionSpec{Resume: true},
+			want: []string{"--verbose", "--print"}},
+		{name: "configured session-id is replaced", exec: ClaudeExecutor{Args: "--session-id old --verbose"}, spec: SessionSpec{ID: id},
+			want: []string{"--verbose", "--session-id", id, "--print"}},
+		{name: "configured resume equals form is replaced", exec: ClaudeExecutor{Args: "--resume=old --verbose"}, spec: SessionSpec{ID: id},
+			want: []string{"--verbose", "--session-id", id, "--print"}},
+		{name: "configured resume is replaced on resume", exec: ClaudeExecutor{Args: "--resume old --verbose"}, spec: SessionSpec{ID: id, Resume: true},
+			want: []string{"--verbose", "--resume", id, "--print"}},
+		{name: "session flag follows model and effort", exec: ClaudeExecutor{Args: "--verbose", Model: "opus", Effort: "high"}, spec: SessionSpec{ID: id},
+			want: []string{"--verbose", "--model", "opus", "--effort", "high", "--session-id", id, "--print"}},
+		{name: "configured session-id kept without spec", exec: ClaudeExecutor{Args: "--session-id old --verbose"}, spec: SessionSpec{},
+			want: []string{"--session-id", "old", "--verbose", "--print"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := tc.exec
+			_, args, result := captureClaudeArgs(t, &e, tc.spec)
+			assert.Equal(t, tc.want, args)
+			assert.Equal(t, tc.spec.ID, result.SessionID)
+		})
+	}
+}
+
+func TestClaudeExecutor_Run_NoSessionID(t *testing.T) {
+	e := &ClaudeExecutor{}
+	_, _, result := captureClaudeArgs(t, e, SessionSpec{})
+	assert.Empty(t, result.SessionID)
+}
+
+func TestClaudeExecutor_RunSession_StartError(t *testing.T) {
+	e := &ClaudeExecutor{cmdRunner: &mocks.CommandRunnerMock{
+		RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
+			return nil, nil, errors.New("boom")
+		},
+	}}
+	result := e.RunSession(context.Background(), "p", SessionSpec{ID: "abc"})
+	require.Error(t, result.Error)
+	assert.Equal(t, "abc", result.SessionID)
+}
+
+func TestClaudeExecutor_RunSession_AgrouterArgs(t *testing.T) {
+	const id = "11111111-2222-4333-8444-555555555555"
+	e := &ClaudeExecutor{
+		Command: "agrouter",
+		Args:    "exec claude --doc=CLAUDE.md --doc=llms.txt -- --dangerously-skip-permissions --output-format stream-json --verbose",
+		Model:   "opus",
+		Effort:  "high",
+	}
+	cmd, args, _ := captureClaudeArgs(t, e, SessionSpec{ID: id, Resume: true})
+	assert.Equal(t, "agrouter", cmd)
+
+	sep := -1
+	for i, a := range args {
+		if a == "--" {
+			sep = i
+			break
+		}
+	}
+	require.GreaterOrEqual(t, sep, 0, "separator must stay in argv")
+	assert.Equal(t, []string{"exec", "claude", "--doc=CLAUDE.md", "--doc=llms.txt", "--"}, args[:sep+1])
+
+	after := args[sep+1:]
+	resumeIdx := -1
+	printIdx := -1
+	for i, a := range after {
+		switch a {
+		case "--resume":
+			resumeIdx = i
+		case "--print":
+			printIdx = i
+		}
+	}
+	require.GreaterOrEqual(t, resumeIdx, 0, "--resume must come after the separator")
+	assert.Equal(t, id, after[resumeIdx+1])
+	require.GreaterOrEqual(t, printIdx, 0, "--print must come after the separator")
+	assert.Greater(t, printIdx, resumeIdx)
+	assert.NotContains(t, args[:sep], "--resume")
+}
+
+func TestClaudeExecutor_CanResume(t *testing.T) {
+	tests := []struct {
+		name    string
+		command string
+		args    string
+		argsSet bool
+		want    bool
+	}{
+		{name: "empty command", want: true},
+		{name: "claude", command: "claude", want: true},
+		{name: "claude.cmd", command: "claude.cmd", want: true},
+		{name: "claude.exe windows path", command: `C:\Users\me\AppData\Roaming\npm\claude.exe`, want: true},
+		{name: "claude path", command: "/path/claude", want: true},
+		{name: "claude with custom args", command: "claude", args: "--verbose --output-format stream-json", want: true},
+		{name: "claude no session persistence", command: "claude", args: "--no-session-persistence --verbose", want: false},
+		{name: "default args no persistence flag", command: "", args: "", want: true},
+		{name: "wrapper script", command: "codex-as-claude.sh", want: false},
+		{name: "wrapper path", command: "/opt/scripts/gemini-as-claude.sh", want: false},
+		{name: "claude lookalike", command: "my-claude", want: false},
+		{name: "agrouter exec claude", command: "agrouter", args: "exec claude --doc=CLAUDE.md -- --verbose", want: true},
+		{name: "agrouter path exec claude", command: "/opt/bin/agrouter", args: "exec claude -- --verbose", want: true},
+		{name: "agrouter exec codex", command: "agrouter", args: "exec codex -- --verbose", want: false},
+		{name: "agrouter empty args", command: "agrouter", argsSet: true, want: false},
+		{name: "agrouter no args", command: "agrouter", want: false},
+		{name: "agrouter exec only", command: "agrouter", args: "exec", want: false},
+		{name: "agrouter no persistence", command: "agrouter", args: "exec claude -- --no-session-persistence", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &ClaudeExecutor{Command: tc.command, Args: tc.args, ArgsSet: tc.argsSet}
+			assert.Equal(t, tc.want, e.CanResume())
+		})
+	}
+}
+
+func TestClaudeExecutor_NewSessionID(t *testing.T) {
+	uuidV4 := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	e := &ClaudeExecutor{}
+	seen := make(map[string]bool)
+	for range 50 {
+		id := e.NewSessionID()
+		assert.Regexp(t, uuidV4, id)
+		assert.False(t, seen[id], "ids must be unique")
+		seen[id] = true
+	}
+}
+
+func TestCommandBaseName(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"", ""},
+		{"claude", "claude"},
+		{"Claude.EXE", "claude"},
+		{"/usr/bin/claude", "claude"},
+		{`C:\bin\claude.cmd`, "claude"},
+		{"run.bat", "run"},
+		{"codex-as-claude.sh", "codex-as-claude.sh"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.in, func(t *testing.T) {
+			assert.Equal(t, tc.want, commandBaseName(tc.in))
+		})
+	}
 }
