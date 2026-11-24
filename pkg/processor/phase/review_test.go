@@ -1,6 +1,7 @@
 package phase
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -13,6 +14,9 @@ import (
 	"github.com/svtlv/ralphex/pkg/executor"
 	"github.com/svtlv/ralphex/pkg/status"
 )
+
+const testHeadA = "aaaa00000000000000000000000000000000aaaa"
+const testHeadB = "bbbb00000000000000000000000000000000bbbb"
 
 type reviewPhaseTestOpts struct {
 	cfg  Config
@@ -228,4 +232,154 @@ func assertLogNotContains(t *testing.T, log *mockLogger, text string) {
 			assert.Failf(t, "unexpected log", "did not expect log containing %q", text)
 		}
 	}
+}
+
+// waitRetryPolicy simulates the wait retry of the real retry policy: Run calls run attempts
+// times inside one Policy.Run call and returns the last result.
+type waitRetryPolicy struct {
+	*testPolicy
+	attempts int
+}
+
+func (p *waitRetryPolicy) Run(ctx context.Context, run func(context.Context, string) executor.Result, prompt, _ string) ExecutionResult {
+	var res executor.Result
+	for range p.attempts {
+		res = run(ctx, prompt)
+	}
+	return ExecutionResult{Result: res}
+}
+
+// headSequence returns a GitChecker whose HeadHash walks the given hashes and then repeats the last one.
+func headSequence(hashes ...string) *gitCheckerMock {
+	idx := 0
+	return &gitCheckerMock{HeadHashFunc: func() (string, error) {
+		hash := hashes[min(idx, len(hashes)-1)]
+		idx++
+		return hash, nil
+	}}
+}
+
+func TestReviewPhase_First_WaitRetryResumesSession(t *testing.T) {
+	sessions, calls := scriptedSessions(t, true, []string{"id-1"},
+		executor.Result{Error: &executor.LimitPatternError{Pattern: "limit", HelpCmd: "usage"}},
+		executor.Result{Output: "done", Signal: status.ReviewDone})
+	log := newMockLogger("progress.txt")
+	phase, _ := reviewPhaseFromRunner(t, reviewPhaseTestOpts{cfg: Config{MaxIterations: 50}, exec: sessions, log: log})
+	phase.policy = &waitRetryPolicy{testPolicy: newScriptedTestPolicy(log), attempts: 2}
+
+	err := phase.First(t.Context())
+
+	require.NoError(t, err)
+	require.Len(t, *calls, 2)
+	assert.Equal(t, "first review prompt", (*calls)[0].prompt)
+	assert.Equal(t, executor.SessionSpec{ID: "id-1"}, (*calls)[0].spec)
+	assert.Equal(t, resumeRoundPrompt, (*calls)[1].prompt)
+	assert.Equal(t, executor.SessionSpec{ID: "id-1", Resume: true}, (*calls)[1].spec)
+}
+
+func TestReviewPhase_Loop_TimeoutResumesOnceThenNewSession(t *testing.T) {
+	sessions, calls := scriptedSessions(t, true, []string{"id-1", "id-2"},
+		executor.Result{}, executor.Result{}, executor.Result{}, executor.Result{Signal: status.ReviewDone})
+	log := newMockLogger("progress.txt")
+	phase, _ := reviewPhaseFromRunner(t, reviewPhaseTestOpts{cfg: Config{MaxIterations: 50}, exec: sessions, log: log})
+	phase.git.deps.Git = headSequence(testHeadA) // HEAD never moves
+	phase.policy = newScriptedTestPolicy(log,
+		ExecutionResult{TimedOut: true}, ExecutionResult{TimedOut: true}, ExecutionResult{TimedOut: true},
+		ExecutionResult{Result: executor.Result{Signal: status.ReviewDone}})
+
+	err := phase.Loop(t.Context(), "")
+
+	require.NoError(t, err)
+	require.Len(t, *calls, 4)
+	assert.Equal(t, executor.SessionSpec{ID: "id-1"}, (*calls)[0].spec, "first try starts a session")
+	assert.Equal(t, "second review prompt", (*calls)[0].prompt)
+	assert.Equal(t, executor.SessionSpec{ID: "id-1", Resume: true}, (*calls)[1].spec, "first timeout is resumed")
+	assert.Equal(t, resumeRoundPrompt, (*calls)[1].prompt)
+	assert.Equal(t, executor.SessionSpec{ID: "id-2"}, (*calls)[2].spec, "second timeout in the session starts a new one")
+	assert.Equal(t, "second review prompt", (*calls)[2].prompt)
+	assert.Equal(t, executor.SessionSpec{ID: "id-2", Resume: true}, (*calls)[3].spec)
+}
+
+func TestReviewPhase_Loop_TimeoutWithMovedHeadDoesNotResume(t *testing.T) {
+	sessions, calls := scriptedSessions(t, true, []string{"id-1", "id-2"}, executor.Result{}, executor.Result{})
+	log := newMockLogger("progress.txt")
+	phase, _ := reviewPhaseFromRunner(t, reviewPhaseTestOpts{cfg: Config{MaxIterations: 50}, exec: sessions, log: log})
+	// round start A, after the timeout B (the round ended with a commit), next round start B
+	phase.git.deps.Git = headSequence(testHeadA, testHeadB, testHeadB)
+	phase.policy = newScriptedTestPolicy(log,
+		ExecutionResult{TimedOut: true},
+		ExecutionResult{Result: executor.Result{Signal: status.ReviewDone}})
+
+	err := phase.Loop(t.Context(), "")
+
+	require.NoError(t, err)
+	require.Len(t, *calls, 2)
+	assert.Equal(t, executor.SessionSpec{ID: "id-1"}, (*calls)[0].spec)
+	assert.Equal(t, executor.SessionSpec{ID: "id-2"}, (*calls)[1].spec, "moved HEAD starts a new session")
+	assert.Equal(t, "second review prompt", (*calls)[1].prompt)
+}
+
+func TestReviewPhase_Loop_TimeoutWithUnknownHeadDoesNotResume(t *testing.T) {
+	sessions, calls := scriptedSessions(t, true, []string{"id-1", "id-2"}, executor.Result{}, executor.Result{})
+	log := newMockLogger("progress.txt")
+	phase, _ := reviewPhaseFromRunner(t, reviewPhaseTestOpts{cfg: Config{MaxIterations: 50}, exec: sessions, log: log})
+	phase.policy = newScriptedTestPolicy(log,
+		ExecutionResult{TimedOut: true},
+		ExecutionResult{Result: executor.Result{Signal: status.ReviewDone}})
+
+	err := phase.Loop(t.Context(), "") // no git checker: HEAD is unknown
+
+	require.NoError(t, err)
+	require.Len(t, *calls, 2)
+	assert.False(t, (*calls)[1].spec.Resume)
+	assert.Equal(t, "id-2", (*calls)[1].spec.ID)
+}
+
+func TestReviewPhase_SessionIDsNotReusedAcrossIterationsOrLoops(t *testing.T) {
+	sessions, calls := scriptedSessions(t, true, []string{"id-1", "id-2", "id-3"},
+		executor.Result{Output: "fixed issues"},
+		executor.Result{Signal: status.ReviewDone},
+		executor.Result{Signal: status.ReviewDone})
+	phase, _ := reviewPhaseFromRunner(t, reviewPhaseTestOpts{cfg: Config{MaxIterations: 50}, exec: sessions})
+	phase.git.deps.Git = headSequence(testHeadA, testHeadB, testHeadB, testHeadB)
+
+	require.NoError(t, phase.Loop(t.Context(), ""))
+	require.NoError(t, phase.Loop(t.Context(), ""))
+
+	require.Len(t, *calls, 3)
+	for i, want := range []string{"id-1", "id-2", "id-3"} {
+		assert.Equal(t, executor.SessionSpec{ID: want}, (*calls)[i].spec)
+		assert.Equal(t, "second review prompt", (*calls)[i].prompt)
+	}
+}
+
+func TestReviewPhase_WrapperExecutorAlwaysGetsFullPrompt(t *testing.T) {
+	var prompts []string
+	exec := &fakeExecutor{run: func(_ context.Context, prompt string) executor.Result {
+		prompts = append(prompts, prompt)
+		return executor.Result{}
+	}}
+	log := newMockLogger("progress.txt")
+	phase, _ := reviewPhaseFromRunner(t, reviewPhaseTestOpts{cfg: Config{MaxIterations: 50}, exec: exec, log: log})
+	phase.git.deps.Git = headSequence(testHeadA)
+	phase.policy = &waitRetryPolicy{testPolicy: newScriptedTestPolicy(log), attempts: 2}
+
+	require.NoError(t, phase.First(t.Context()))
+	assert.Equal(t, []string{"first review prompt", "first review prompt"}, prompts)
+
+	prompts = nil
+	phase.policy = newScriptedTestPolicy(log,
+		ExecutionResult{TimedOut: true}, ExecutionResult{Result: executor.Result{Signal: status.ReviewDone}})
+	require.NoError(t, phase.Loop(t.Context(), ""))
+	assert.Equal(t, []string{"second review prompt", "second review prompt"}, prompts)
+}
+
+func TestReviewPhase_SessionTimeoutFromConfig(t *testing.T) {
+	appCfg := testAppConfig(t)
+	appCfg.SessionTimeout = 3 * time.Minute
+	phase, _ := reviewPhaseFromRunner(t, reviewPhaseTestOpts{cfg: Config{MaxIterations: 50, AppConfig: appCfg}})
+	assert.Equal(t, 3*time.Minute, phase.sessionTimeout())
+
+	phase.cfg.AppConfig = nil
+	assert.Zero(t, phase.sessionTimeout())
 }

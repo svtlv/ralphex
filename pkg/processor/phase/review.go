@@ -59,6 +59,11 @@ func (p *ReviewPhase) Loop(ctx context.Context, prefix string) error {
 	maxReviewIterations := max(minReviewIterations, p.cfg.MaxIterations/reviewIterationDivisor)
 
 	execName := p.cfg.executorName()
+
+	// one round per review iteration. a timed-out iteration that did not move HEAD keeps its round,
+	// so the retry iteration resumes the same session instead of repeating the research.
+	var round *reviewRound
+	var roundHead string
 	for i := 1; i <= maxReviewIterations; i++ {
 		select {
 		case <-ctx.Done():
@@ -67,9 +72,13 @@ func (p *ReviewPhase) Loop(ctx context.Context, prefix string) error {
 		}
 
 		p.log.PrintSection(p.section(i, ": critical/major"))
-		headBefore := p.headHash()
+		if round == nil {
+			round = newReviewRound(ctx, p.exec, p.sessionTimeout())
+			roundHead = p.headHash()
+		}
+		headBefore := roundHead
 
-		execResult := p.policy.Run(ctx, p.exec.Run, p.prompts.SecondReviewPrompt(prefix), execName)
+		execResult := p.policy.Run(ctx, round.Run, p.prompts.SecondReviewPrompt(prefix), execName)
 		result := execResult.Result
 		if err := wrapExecutorError(p.policy, result.Error, execName); err != nil {
 			return err
@@ -85,6 +94,13 @@ func (p *ReviewPhase) Loop(ctx context.Context, prefix string) error {
 		}
 
 		if execResult.TimedOut {
+			// the timed-out round may already have ended with a commit. HEAD moved or unknown means
+			// the round cannot be proven unfinished, so drop it and let the retry start a new session.
+			if headAfter := p.headHash(); roundHead == "" || headAfter == "" || headAfter != roundHead {
+				round = nil
+			} else {
+				round.noteTimedOut()
+			}
 			p.log.Print("session timed out, retrying review iteration after %s...", retryBackoff)
 			if err := p.policy.Sleep(ctx, retryBackoff); err != nil {
 				return fmt.Errorf("interrupted: %w", err)
@@ -92,6 +108,7 @@ func (p *ReviewPhase) Loop(ctx context.Context, prefix string) error {
 			continue
 		}
 
+		round = nil // the iteration ended without a timeout, the next one starts a new round
 		if headBefore != "" {
 			if headAfter := p.headHash(); headAfter == headBefore {
 				p.log.Print("%s review complete - no changes detected", execName)
@@ -113,6 +130,15 @@ func (p *ReviewPhase) headHash() string {
 	return p.git.headHash()
 }
 
+// sessionTimeout returns the configured per-session timeout, 0 when none applies.
+// the review phase always runs claude or codex, so the policy's executor gating always holds.
+func (p *ReviewPhase) sessionTimeout() time.Duration {
+	if p.cfg.AppConfig == nil {
+		return 0
+	}
+	return p.cfg.AppConfig.SessionTimeout
+}
+
 func (p *ReviewPhase) section(iteration int, suffix string) status.Section {
 	if p.cfg.isCodexExecutor() {
 		return status.NewInternalReviewSection(iteration, suffix)
@@ -122,7 +148,8 @@ func (p *ReviewPhase) section(iteration int, suffix string) status.Section {
 
 func (p *ReviewPhase) run(ctx context.Context, prompt, phaseLabel string) error {
 	execName := p.cfg.executorName()
-	execResult := p.policy.Run(ctx, p.exec.Run, prompt, execName)
+	round := newReviewRound(ctx, p.exec, p.sessionTimeout())
+	execResult := p.policy.Run(ctx, round.Run, prompt, execName)
 	result := execResult.Result
 	if err := wrapExecutorError(p.policy, result.Error, execName); err != nil {
 		return err
