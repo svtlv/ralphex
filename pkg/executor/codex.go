@@ -168,6 +168,8 @@ func (e *CodexExecutor) Run(ctx context.Context, prompt string) Result {
 // carries the id read from codex's stderr banner, or spec.ID after a resume that printed none.
 func (e *CodexExecutor) RunSession(ctx context.Context, prompt string, spec SessionSpec) Result {
 	result, stderrRes := e.runCodex(ctx, prompt, spec)
+	// stderrRes.sessionID is empty when the working directory made the banner untrustworthy
+	// (see stderrStreamOpts.untrustedBanner), so no second check is needed here.
 	sessionID := stderrRes.sessionID
 	if sessionID == "" && spec.Resume {
 		sessionID = spec.ID
@@ -300,13 +302,18 @@ func (e *CodexExecutor) runCodex(ctx context.Context, prompt string, spec Sessio
 	// gives shouldDisplay license to leak codex's resolved model/sandbox/effort
 	// once at the top of the run instead of repeating the full banner per phase.
 	firstRun := e.headerEmitted.CompareAndSwap(false, true)
+	untrustedBanner := workdirHasLineBreak()
 	sessionIDCh := make(chan string, 1)
 	stderrDone := make(chan stderrResult, 1)
 	go func() {
 		stderrDone <- e.processStderr(execCtx, streams.Stderr, stderrStreamOpts{
 			idleTouch:   idleTouch,
 			sessionIDCh: sessionIDCh,
+			resumeID:    resumeID,
 			firstRun:    firstRun,
+			// decided before the child starts, so neither the rollout tailer nor the caller can
+			// receive an id read from a banner that a directory name could have forged
+			untrustedBanner: untrustedBanner,
 		})
 	}()
 
@@ -356,7 +363,9 @@ func (e *CodexExecutor) runCodex(ctx context.Context, prompt string, spec Sessio
 	}
 
 	// return stdout content as the result (the actual answer from codex)
-	return Result{Output: stdoutContent, Signal: signal, Error: finalErr}, stderrRes
+	// DiagnosticText carries only the prefix-gated CLI error line. Error holds the raw stderr tail,
+	// which can quote model text, so callers must not read a missing session out of it.
+	return Result{Output: stdoutContent, Signal: signal, Error: finalErr, DiagnosticText: stderrRes.missing}, stderrRes
 }
 
 // finalError reconciles stderr/stdout/wait errors into the single error returned
@@ -462,6 +471,9 @@ func (e *CodexExecutor) checkPatterns(stdoutContent string, stderr stderrResult)
 	return nil
 }
 
+// codexMissingSessionMarker is the lowercase text codex prints when a resumed thread does not exist.
+const codexMissingSessionMarker = "no rollout found for thread id"
+
 // stderrResult holds processed stderr output and any error from reading.
 // limitMatch and errorMatch capture the FIRST limit/error pattern that fires
 // during streaming, on the untruncated, un-evicted line — so detection is not
@@ -471,6 +483,7 @@ type stderrResult struct {
 	limitMatch string   // first matched limit pattern seen on stderr (live scan)
 	errorMatch string   // first matched error pattern seen on stderr (live scan)
 	sessionID  string   // session id from the stderr banner, empty when codex printed none
+	missing    string   // first CLI error line that reports a missing resume session (prefix-gated)
 	err        error
 }
 
@@ -478,7 +491,12 @@ type stderrResult struct {
 type stderrStreamOpts struct {
 	idleTouch   func()        // invoked for every stderr line to reset the idle-timeout timer; pass a no-op when idle timeout is disabled
 	sessionIDCh chan<- string // when non-nil, receives the first detected "session id: <uuid>" (non-blocking, buffered channel expected)
+	resumeID    string        // session id of a resume run; empty otherwise, which disables missing-session detection
 	firstRun    bool          // gates the one-time emission of codex's resolved model/sandbox/effort header lines
+
+	// untrustedBanner is true when the working directory name could forge a "session id:" line (see
+	// workdirHasLineBreak). the banner id is then neither recorded nor sent to the rollout tailer.
+	untrustedBanner bool
 }
 
 // processStderr reads stderr line-by-line, filters for progress display, and
@@ -494,7 +512,7 @@ func (e *CodexExecutor) processStderr(ctx context.Context, r io.Reader, opts std
 
 	state := &codexFilterState{firstRun: opts.firstRun}
 	var tail []string
-	var limitMatch, errorMatch string
+	var limitMatch, errorMatch, missing string
 	sessionIDSent := false
 	var sessionID string
 
@@ -506,19 +524,28 @@ func (e *CodexExecutor) processStderr(ctx context.Context, r io.Reader, opts std
 		// per category so detection is eviction- and truncation-resistant.
 		// restricted to CLI-error-prefixed lines (see scanLineForPatterns).
 		e.scanLineForPatterns(line, &limitMatch, &errorMatch)
+		// the missing-session report is trusted only as a CLI error line naming the session this run
+		// tried to resume, and only before the session banner. codex prints the banner once the thread is
+		// started, so a banner means the session exists. after it, commands get CODEX_THREAD_ID in their
+		// environment and their output is echoed on stderr, so a later match is not a CLI report.
+		if missing == "" && !sessionIDSent && opts.resumeID != "" && isCodexErrorLine(line) {
+			lower := strings.ToLower(line)
+			if strings.Contains(lower, codexMissingSessionMarker) && strings.Contains(lower, strings.ToLower(opts.resumeID)) {
+				missing = strings.TrimSpace(line)
+			}
+		}
 
 		// surface session id from header block to caller (once) so the rollout
 		// file can be tailed in parallel for assistant-message streaming.
+		bannerID := ""
 		if !sessionIDSent {
-			if id := e.extractSessionID(line); id != "" {
-				sessionID = id
-				sessionIDSent = true
-				if opts.sessionIDCh != nil {
-					select {
-					case opts.sessionIDCh <- id:
-					default:
-					}
-				}
+			bannerID = e.extractSessionID(line)
+		}
+		if bannerID != "" {
+			sessionIDSent = true
+			if !opts.untrustedBanner {
+				sessionID = bannerID
+				sendSessionID(opts.sessionIDCh, bannerID)
 			}
 		}
 
@@ -543,9 +570,10 @@ func (e *CodexExecutor) processStderr(ctx context.Context, r io.Reader, opts std
 	})
 
 	if err != nil {
-		return stderrResult{lastLines: tail, limitMatch: limitMatch, errorMatch: errorMatch, sessionID: sessionID, err: fmt.Errorf("read stderr: %w", err)}
+		return stderrResult{lastLines: tail, limitMatch: limitMatch, errorMatch: errorMatch, sessionID: sessionID,
+			missing: missing, err: fmt.Errorf("read stderr: %w", err)}
 	}
-	return stderrResult{lastLines: tail, limitMatch: limitMatch, errorMatch: errorMatch, sessionID: sessionID}
+	return stderrResult{lastLines: tail, limitMatch: limitMatch, errorMatch: errorMatch, sessionID: sessionID, missing: missing}
 }
 
 // scanLineForPatterns updates limitMatch / errorMatch with the first matching
@@ -667,12 +695,49 @@ func (e *CodexExecutor) stripBold(s string) string {
 	return result
 }
 
-// sessionIDPattern matches the "session id: <uuid>" line codex emits in its
-// startup banner. capture group 1 is the session id (lowercase hex + dashes).
-var sessionIDPattern = regexp.MustCompile(`(?i)\bsession id:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b`)
+// sessionIDPattern matches the "session id: <uuid>" banner line codex emits in its startup header.
+// the whole line must be the field: an optional "[timestamp] " prefix, the field name, the id and
+// nothing else. an unanchored match would also fire on the "workdir:" line, whose path can contain
+// the same text with another session's id, and a resume would then open that session.
+// capture group 1 is the session id (lowercase hex + dashes).
+var sessionIDPattern = regexp.MustCompile(`(?i)^\s*(?:\[[^\]]*\]\s*)?session id:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\s*$`)
 
-// extractSessionID returns the codex session id from a stderr line that
-// includes "session id: <uuid>", or "" when the line does not match. used
+// workdirHasLineBreak reports whether the working directory of the codex child (the cwd of this
+// process, which the child inherits) contains a line break, or cannot be read. codex prints the
+// "workdir:" banner field without escaping, so such a name can add a forged "session id:" line ahead
+// of the real one, and the first match would then name another session. the other banner fields come
+// from configuration, not from the file system. os.Getwd may return a logical path taken from $PWD
+// while codex prints the physical one, so both spellings are checked. an unreadable cwd counts as
+// ambiguous because the banner cannot be proven clean; the caller then keeps no id and the round
+// starts a new session.
+func workdirHasLineBreak() bool {
+	wd, err := os.Getwd()
+	if err != nil {
+		return true
+	}
+	if strings.ContainsAny(wd, "\r\n") {
+		return true
+	}
+	physical, err := filepath.EvalSymlinks(wd)
+	if err != nil {
+		return true
+	}
+	return strings.ContainsAny(physical, "\r\n")
+}
+
+// sendSessionID hands the id to the rollout tailer without blocking; a nil or full channel drops it.
+func sendSessionID(ch chan<- string, id string) {
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- id:
+	default:
+	}
+}
+
+// extractSessionID returns the codex session id from a stderr line that is the
+// "session id: <uuid>" banner field, or "" when the line does not match. used
 // by processStderr to surface the id to the rollout-tail goroutine.
 func (e *CodexExecutor) extractSessionID(line string) string {
 	m := sessionIDPattern.FindStringSubmatch(line)

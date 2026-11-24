@@ -2414,6 +2414,34 @@ func TestClaudeExecutor_RunSession_Args(t *testing.T) {
 			want: []string{"--verbose", "--resume", id, "--print"}},
 		{name: "session flag follows model and effort", exec: ClaudeExecutor{Args: "--verbose", Model: "opus", Effort: "high"}, spec: SessionSpec{ID: id},
 			want: []string{"--verbose", "--model", "opus", "--effort", "high", "--session-id", id, "--print"}},
+		{name: "configured continue selectors are removed", exec: ClaudeExecutor{Args: "--continue -c --verbose"}, spec: SessionSpec{ID: id},
+			want: []string{"--verbose", "--session-id", id, "--print"}},
+		{name: "configured -r with value is removed", exec: ClaudeExecutor{Args: "-r old --verbose"}, spec: SessionSpec{ID: id, Resume: true},
+			want: []string{"--verbose", "--resume", id, "--print"}},
+		{name: "continue keeps the next positional token", exec: ClaudeExecutor{Args: "-c exec --verbose"}, spec: SessionSpec{ID: id},
+			want: []string{"exec", "--verbose", "--session-id", id, "--print"}},
+		{name: "launcher options before the separator are kept", exec: ClaudeExecutor{Args: "exec claude -c cfg -- -c --verbose"}, spec: SessionSpec{ID: id},
+			want: []string{"exec", "claude", "-c", "cfg", "--", "--verbose", "--session-id", id, "--print"}},
+		{name: "attached -r value is removed", exec: ClaudeExecutor{Args: "-rold --verbose"}, spec: SessionSpec{ID: id, Resume: true},
+			want: []string{"--verbose", "--resume", id, "--print"}},
+		{name: "fork-session is removed", exec: ClaudeExecutor{Args: "--fork-session --verbose"}, spec: SessionSpec{ID: id, Resume: true},
+			want: []string{"--verbose", "--resume", id, "--print"}},
+		{name: "-c inside a boolean cluster is removed", exec: ClaudeExecutor{Args: "-cp --verbose"}, spec: SessionSpec{ID: id},
+			want: []string{"-p", "--verbose", "--session-id", id, "--print"}},
+		{name: "cluster with a value-taking letter is kept", exec: ClaudeExecutor{Args: "-dc --verbose"}, spec: SessionSpec{ID: id},
+			want: []string{"-dc", "--verbose", "--session-id", id, "--print"}},
+		{name: "-c before a value-taking letter is removed", exec: ClaudeExecutor{Args: "-cd --verbose"}, spec: SessionSpec{ID: id},
+			want: []string{"-d", "--verbose", "--session-id", id, "--print"}},
+		{name: "-c before a value-taking letter keeps its value", exec: ClaudeExecutor{Args: "-cdapi --verbose"}, spec: SessionSpec{ID: id},
+			want: []string{"-dapi", "--verbose", "--session-id", id, "--print"}},
+		{name: "-r with attached value inside a cluster is removed", exec: ClaudeExecutor{Args: "-pr" + "old --verbose"}, spec: SessionSpec{ID: id, Resume: true},
+			want: []string{"-p", "--verbose", "--resume", id, "--print"}},
+		{name: "-r ending a cluster takes the next value token", exec: ClaudeExecutor{Args: "-pr old --verbose"}, spec: SessionSpec{ID: id, Resume: true},
+			want: []string{"-p", "--verbose", "--resume", id, "--print"}},
+		{name: "-r ending a cluster keeps a following flag", exec: ClaudeExecutor{Args: "-pr --verbose"}, spec: SessionSpec{ID: id, Resume: true},
+			want: []string{"-p", "--verbose", "--resume", id, "--print"}},
+		{name: "selectors kept without spec", exec: ClaudeExecutor{Args: "--continue --verbose"}, spec: SessionSpec{},
+			want: []string{"--continue", "--verbose", "--print"}},
 		{name: "configured session-id kept without spec", exec: ClaudeExecutor{Args: "--session-id old --verbose"}, spec: SessionSpec{},
 			want: []string{"--session-id", "old", "--verbose", "--print"}},
 	}
@@ -2450,6 +2478,37 @@ func TestClaudeExecutor_RunSession_MissingSessionReachesDiagnosticText(t *testin
 	var patternErr *PatternMatchError
 	assert.NotErrorAs(t, result.Error, &patternErr)
 	assert.Contains(t, result.DiagnosticText, "No conversation found")
+}
+
+// the silent fallback must not write the CLI's missing-session line (which names the session id)
+// to the output handler, while a normal resume run still surfaces plain CLI lines.
+func TestClaudeExecutor_RunSession_MissingSessionLineNotShown(t *testing.T) {
+	const id = "11111111-2222-4333-8444-555555555555"
+	tests := []struct {
+		name     string
+		spec     SessionSpec
+		wantSeen bool
+	}{
+		{name: "resume hides the missing-session line", spec: SessionSpec{ID: id, Resume: true}, wantSeen: false},
+		{name: "new session shows the line", spec: SessionSpec{ID: id}, wantSeen: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mocks.CommandRunnerMock{
+				RunFunc: func(_ context.Context, _ string, _ ...string) (io.Reader, func() error, error) {
+					return strings.NewReader("No conversation found with session ID: " + id + "\n"),
+						func() error { return errors.New("exit status 1") }, nil
+				},
+			}
+			var seen strings.Builder
+			e := &ClaudeExecutor{cmdRunner: mock, OutputHandler: func(s string) { seen.WriteString(s) }}
+			result := e.RunSession(context.Background(), "p", tc.spec)
+			assert.Equal(t, tc.wantSeen, strings.Contains(seen.String(), id))
+			if tc.spec.Resume {
+				assert.Contains(t, result.DiagnosticText, "No conversation found")
+			}
+		})
+	}
 }
 
 func TestClaudeExecutor_RunSession_StartError(t *testing.T) {

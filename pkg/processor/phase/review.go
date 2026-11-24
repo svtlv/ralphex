@@ -72,13 +72,22 @@ func (p *ReviewPhase) Loop(ctx context.Context, prefix string) error {
 		}
 
 		p.log.PrintSection(p.section(i, ": critical/major"))
+		// head can move while the retry backoff sleeps (a commit from another terminal), and the old
+		// session would then judge the old commit. a moved or unreadable head starts a new round.
+		if round != nil && (roundHead == "" || p.headHash() != roundHead) {
+			round = nil
+		}
 		if round == nil {
-			round = newReviewRound(ctx, p.exec, p.sessionTimeout())
+			round = p.newRound(ctx)
 			roundHead = p.headHash()
+			round.startHead = roundHead
 		}
 
 		execResult := p.policy.Run(ctx, round.Run, p.prompts.SecondReviewPrompt(prefix), execName)
 		result := execResult.Result
+		// a rate-limit wait retry can replace the session inside the policy call after HEAD moved, so
+		// compare against the HEAD the final session started at, not the one the round began with
+		roundHead = round.startHead
 		if err := wrapExecutorError(p.policy, result.Error, execName); err != nil {
 			return err
 		}
@@ -125,6 +134,15 @@ func (p *ReviewPhase) Loop(ctx context.Context, prefix string) error {
 	return nil
 }
 
+// newRound creates the session helper of one review round, wired to the phase's HEAD reader.
+func (p *ReviewPhase) newRound(ctx context.Context) *reviewRound {
+	round := newReviewRound(ctx, p.exec, p.sessionTimeout())
+	if p.git.hasGit() {
+		round.head = p.headHash
+	}
+	return round
+}
+
 func (p *ReviewPhase) headHash() string {
 	return p.git.headHash()
 }
@@ -147,7 +165,7 @@ func (p *ReviewPhase) section(iteration int, suffix string) status.Section {
 
 func (p *ReviewPhase) run(ctx context.Context, prompt, phaseLabel string) error {
 	execName := p.cfg.executorName()
-	round := newReviewRound(ctx, p.exec, p.sessionTimeout())
+	round := p.newRound(ctx)
 	execResult := p.policy.Run(ctx, round.Run, prompt, execName)
 	result := execResult.Result
 	if err := wrapExecutorError(p.policy, result.Error, execName); err != nil {

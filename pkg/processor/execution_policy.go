@@ -100,7 +100,13 @@ func (p *retryPolicy) runWithSessionTimeout(ctx context.Context, run func(contex
 
 	result := run(childCtx, prompt)
 
-	if childCtx.Err() != nil && ctx.Err() == nil {
+	timedOut := childCtx.Err() != nil && ctx.Err() == nil
+	if result.Fallback {
+		// the fallback session ran under its own full timeout, started after this deadline, so the
+		// expiry of childCtx says nothing about it: only the fallback's own verdict counts.
+		timedOut = result.FallbackTimedOut && ctx.Err() == nil
+	}
+	if timedOut {
 		p.log.Print("warning: %s session timed out after %s, the agent may have started a blocking operation",
 			toolName, sessionTimeout)
 		result.Error = nil

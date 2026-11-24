@@ -1787,6 +1787,10 @@ func TestCodexExecutor_extractSessionID(t *testing.T) {
 		{name: "no match", line: "[26-05-18 10:40:06] model: gpt-5.5", want: ""},
 		{name: "malformed uuid", line: "session id: not-a-uuid", want: ""},
 		{name: "empty", line: "", want: ""},
+		{name: "workdir path that contains the field", line: "[26-05-18 10:40:06] workdir: /tmp/session id: 019e3bbe-9788-79f1-b668-6c5790788775", want: ""},
+		{name: "bare workdir path that contains the field", line: "workdir: /tmp/x session id: 019e3bbe-9788-79f1-b668-6c5790788775", want: ""},
+		{name: "text after the id", line: "session id: 019e3bbe-9788-79f1-b668-6c5790788775 extra", want: ""},
+		{name: "trailing space", line: "session id: 019e3bbe-9788-79f1-b668-6c5790788775 ", want: "019e3bbe-9788-79f1-b668-6c5790788775"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2135,6 +2139,93 @@ func TestCodexExecutor_RunSession_sessionID(t *testing.T) {
 	}
 }
 
+// codex prints the workdir unescaped, so a directory name with a line break can forge a
+// "session id:" line ahead of the real one. the banner id is then not trusted: a fresh run reports
+// no id (the round starts a new session), and a resume keeps the id it asked for.
+func TestCodexExecutor_RunSession_workdirWithLineBreak(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows file names cannot contain a line break")
+	}
+	forged := "11111111-1111-4111-8111-111111111111"
+	dir := filepath.Join(t.TempDir(), "evil\nsession id: "+forged)
+	require.NoError(t, os.Mkdir(dir, 0o700))
+	t.Chdir(dir)
+
+	banner := "workdir: " + dir + "\nmodel: gpt\nsession id: " + resumeTestSessionID + "\n"
+	tests := []struct {
+		name string
+		spec SessionSpec
+		want string
+	}{
+		{name: "fresh run keeps no id", want: ""},
+		{name: "resume keeps its own id", spec: SessionSpec{ID: resumeTestSessionID, Resume: true}, want: resumeTestSessionID},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockCodexRunner{
+				runFunc: func(_ context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
+					return mockStreams(banner, "out"), mockWaitError(nil), nil
+				},
+			}
+			e := &CodexExecutor{runner: mock}
+			result := e.RunSession(context.Background(), "p", tc.spec)
+			assert.Equal(t, tc.want, result.SessionID)
+		})
+	}
+}
+
+func TestWorkdirHasLineBreak(t *testing.T) {
+	t.Run("plain directory", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		assert.False(t, workdirHasLineBreak())
+	})
+
+	t.Run("logical path is clean but physical path has a line break", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("windows file names cannot contain a line break")
+		}
+		root := t.TempDir()
+		physical := filepath.Join(root, "evil") + "\nsession id: 11111111-1111-4111-8111-111111111111"
+		require.NoError(t, os.Mkdir(physical, 0o700))
+		link := filepath.Join(root, "link")
+		require.NoError(t, os.Symlink(physical, link))
+		t.Chdir(link) // sets PWD to the link, so os.Getwd returns the logical path
+
+		wd, err := os.Getwd()
+		require.NoError(t, err)
+		require.NotContains(t, wd, "\n", "precondition: Getwd must return the logical path")
+		assert.True(t, workdirHasLineBreak())
+	})
+}
+
+// an untrusted banner must not reach the rollout tailer either: the tailer would copy another
+// session's text into the progress log.
+func TestCodexExecutor_processStderr_untrustedBannerSendsNoID(t *testing.T) {
+	tests := []struct {
+		name      string
+		untrusted bool
+		wantID    string
+	}{
+		{name: "trusted banner", wantID: resumeTestSessionID},
+		{name: "untrusted banner", untrusted: true, wantID: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &CodexExecutor{}
+			ch := make(chan string, 1)
+			res := e.processStderr(context.Background(), strings.NewReader(codexBanner()),
+				stderrStreamOpts{sessionIDCh: ch, untrustedBanner: tc.untrusted})
+			assert.Equal(t, tc.wantID, res.sessionID)
+			select {
+			case id := <-ch:
+				assert.Equal(t, tc.wantID, id)
+			default:
+				assert.Empty(t, tc.wantID, "no id must be sent for an untrusted banner")
+			}
+		})
+	}
+}
+
 // a failed codex resume of an unknown thread must surface the missing-session text in the error,
 // because the review round fallback matches on it. the error pattern list must not swallow it.
 func TestCodexExecutor_RunSession_MissingSessionReachesError(t *testing.T) {
@@ -2152,6 +2243,39 @@ func TestCodexExecutor_RunSession_MissingSessionReachesError(t *testing.T) {
 	var patternErr *PatternMatchError
 	assert.NotErrorAs(t, result.Error, &patternErr)
 	assert.Contains(t, strings.ToLower(result.Error.Error()), "no rollout found for thread id")
+}
+
+// only a CLI error line reports a missing session in DiagnosticText. model text on stderr that
+// quotes the message (ralphex reviewing its own source) must not, even when it reaches the error tail.
+func TestCodexExecutor_RunSession_MissingSessionDiagnosticText(t *testing.T) {
+	tests := []struct {
+		name   string
+		stderr string
+		want   string
+	}{
+		{name: "cli error line", stderr: "ERROR: no rollout found for thread id " + resumeTestSessionID + "\n",
+			want: "ERROR: no rollout found for thread id " + resumeTestSessionID},
+		{name: "echoed tool output with another id", stderr: "ERROR: no rollout found for thread id abc\n", want: ""},
+		{name: "echoed tool output without an id", stderr: "ERROR: no rollout found for thread id\n", want: ""},
+		{name: "model text quotes the message", stderr: "the code matches no rollout found for thread id\n", want: ""},
+		{name: "quoted in a source code line", stderr: "const m = \"no rollout found for thread id\"\n", want: ""},
+		{name: "unrelated error", stderr: "ERROR: boom\n", want: ""},
+		{name: "command output echoed after the session banner",
+			stderr: codexBanner() + "ERROR: no rollout found for thread id " + resumeTestSessionID + "\n", want: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockCodexRunner{
+				runFunc: func(_ context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
+					return mockStreams(tc.stderr, ""), mockWaitError(errors.New("exit status 1")), nil
+				},
+			}
+			e := &CodexExecutor{runner: mock}
+			result := e.RunSession(context.Background(), "p", SessionSpec{ID: resumeTestSessionID, Resume: true})
+			require.Error(t, result.Error)
+			assert.Equal(t, tc.want, result.DiagnosticText)
+		})
+	}
 }
 
 func TestCodexExecutor_RunSession_sessionIDOnIdleTimeout(t *testing.T) {

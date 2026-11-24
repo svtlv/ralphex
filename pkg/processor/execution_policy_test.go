@@ -311,6 +311,38 @@ func TestExecutionPolicy_SessionTimeoutBlockingExecutor(t *testing.T) {
 	assertLogContains(t, log, "session timed out")
 }
 
+func TestExecutionPolicy_SessionTimeoutFallbackVerdict(t *testing.T) {
+	tests := []struct {
+		name         string
+		fbTimedOut   bool
+		wantTimedOut bool
+		wantSignal   string
+	}{
+		{name: "fallback finished after the policy deadline inside its own timeout", fbTimedOut: false,
+			wantTimedOut: false, wantSignal: status.Completed},
+		{name: "fallback hit its own timeout", fbTimedOut: true, wantTimedOut: true, wantSignal: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := newMockLogger()
+			appCfg := testAppConfig(t)
+			appCfg.SessionTimeout = 20 * time.Millisecond
+			appCfg.SessionTimeoutSet = true
+			policy := newRetryPolicy(retryPolicyOpts{cfg: Config{AppConfig: appCfg}, log: log})
+
+			run := func(ctx context.Context, _ string) executor.Result {
+				<-ctx.Done() // the policy deadline passes while the fallback is still running
+				return executor.Result{Output: "done", Signal: status.Completed, Fallback: true, FallbackTimedOut: tt.fbTimedOut}
+			}
+
+			result := policy.runWithSessionTimeout(t.Context(), run, "prompt", "claude")
+
+			assert.Equal(t, tt.wantTimedOut, result.TimedOut)
+			assert.Equal(t, tt.wantSignal, result.Result.Signal)
+		})
+	}
+}
+
 func TestExecutionPolicy_SessionTimeoutZeroDoesNotAddDeadline(t *testing.T) {
 	log := newMockLogger()
 	appCfg := testAppConfig(t)
