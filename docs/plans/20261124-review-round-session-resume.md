@@ -106,10 +106,10 @@ Scope (from the backlog item `docs/backlog/claude-review-rounds-repeat-research.
 
 ### Task 5: Verify acceptance criteria
 
-- [ ] run full test suite: `make test`
-- [ ] run linter: `make lint` and format: `make fmt`
-- [ ] cross-compile check: `GOOS=windows GOARCH=amd64 go build ./...`
-- [ ] verify test coverage of new code meets 80%+
+- [x] run full test suite: `make test`
+- [x] run linter: `make lint` and format: `make fmt` (lint: 0 issues; gofmt -s clean; goimports is not installed here, so the goimports step of make fmt was skipped)
+- [x] cross-compile check: `GOOS=windows GOARCH=amd64 go build ./...`
+- [x] verify test coverage of new code meets 80%+ (round.go 100%, RunSession/CanResume 100%, NewSessionID 83%, rolloutSize/tailRolloutFile 86%, total 89.5%)
 
 ### Task 6: Update documentation and remove the backlog item
 
