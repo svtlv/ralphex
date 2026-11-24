@@ -32,8 +32,6 @@ change to upstream policy. No item is complete merely because a related PR exist
 9. [Reject unknown pi thinking levels](pi-ignores-unknown-thinking-level.md):
    blocked on refreshing upstream behavior/choosing a fork-side mitigation; do not
    confuse it with effective-level observability. No upstream write is implied.
-10. [Resume a retried review round](claude-review-rounds-repeat-research.md): reuse the
-    session only for same-process retries of one round; each round and each restart stays clean.
 
 ## Design decisions (`worth: maybe`, not rejected)
 

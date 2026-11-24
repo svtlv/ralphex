@@ -118,11 +118,11 @@ Scope (from the backlog item `docs/backlog/claude-review-rounds-repeat-research.
 - Delete: `docs/backlog/claude-review-rounds-repeat-research.md`
 - Modify: `docs/backlog/README.md`
 
-- [ ] `CLAUDE.md`: add a Key Patterns bullet for review-round session resume (in-memory id per round, `round.Run` wraps the executor so the policy is unchanged, resume once after a timeout, fallback to a new session, real `claude`/`codex` and `agrouter ... exec claude` only, `codex-agrouter.sh` and `*-as-claude` wrappers never resume, no state file)
-- [ ] `llms.txt` and `README.md`: update the transient retry, rate limit retry, and session timeout text to say that same-process review retries resume the round session for the real claude and codex CLIs (and agrouter running claude), and that other wrappers and restarts start fresh
-- [ ] `docs/custom-providers.md`: note that `*-as-claude` wrappers never resume
-- [ ] delete the backlog item and remove its entry (item 10) from `docs/backlog/README.md`
-- [ ] run `make test` and `make lint` once more
+- [x] `CLAUDE.md`: add a Key Patterns bullet for review-round session resume (in-memory id per round, `round.Run` wraps the executor so the policy is unchanged, resume once after a timeout, fallback to a new session, real `claude`/`codex` and `agrouter ... exec claude` only, `codex-agrouter.sh` and `*-as-claude` wrappers never resume, no state file)
+- [x] `llms.txt` and `README.md`: update the transient retry, rate limit retry, and session timeout text to say that same-process review retries resume the round session for the real claude and codex CLIs (and agrouter running claude), and that other wrappers and restarts start fresh
+- [x] `docs/custom-providers.md`: note that `*-as-claude` wrappers never resume
+- [x] delete the backlog item and remove its entry (item 10) from `docs/backlog/README.md`
+- [x] run `make test` and `make lint` once more
 
 ## Post-Completion
 
