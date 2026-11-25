@@ -3,11 +3,13 @@ package executor
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -25,6 +27,19 @@ type Result struct {
 	Signal         string // detected signal (COMPLETED, FAILED, etc.) or empty
 	Error          error  // execution error if any
 	IdleTimedOut   bool   // true when idle timeout fired (derived context canceled, parent alive)
+	SessionID      string // session id the run used or created; empty when the executor has none
+
+	// set by the review round when a failed resume fell back to a new session that ran under its own
+	// session timeout. the retry policy then reads FallbackTimedOut instead of its own, earlier deadline.
+	Fallback         bool // the result comes from a fallback session with its own timeout
+	FallbackTimedOut bool // that fallback session hit its own timeout while the phase context was alive
+}
+
+// SessionSpec asks an executor to run inside a named session. the zero value means a plain
+// run with no session handling, which keeps the default argv unchanged.
+type SessionSpec struct {
+	ID     string // session id; empty means no session handling
+	Resume bool   // true resumes the session ID, false starts a new session named ID
 }
 
 // recentBlockCount bounds both recent surfaced output and trusted diagnostics.
@@ -228,6 +243,73 @@ func stripFlag(args []string, flag string) []string {
 	return result
 }
 
+// stripSessionSelectors removes the configured session selectors: --continue, --fork-session, and the
+// short flags -c and -r, bare or inside a cluster such as -cp, -cd or -pr<id>. claude rejects them
+// together with --session-id (or --resume) unless --fork-session is set, and --fork-session itself
+// makes claude create a new id while the round keeps the old one. a launcher such as agrouter keeps
+// its own options before "--", so when a "--" is present only the part after it is touched.
+func stripSessionSelectors(args []string) []string {
+	start := 0
+	if i := slices.Index(args, "--"); i >= 0 {
+		start = i + 1
+	}
+	tail := args[start:]
+	out := make([]string, 0, len(tail))
+	for i := 0; i < len(tail); i++ {
+		a := tail[i]
+		if a == "--continue" || a == "--fork-session" {
+			continue
+		}
+		if len(a) < 2 || a[0] != '-' || a[1] == '-' {
+			out = append(out, a)
+			continue
+		}
+		cleaned, takesNext := stripShortCluster(a)
+		if cleaned != "" {
+			out = append(out, cleaned)
+		}
+		// a bare -r takes an optional value in the next token, unless that token is another flag
+		if takesNext && i+1 < len(tail) && !strings.HasPrefix(tail[i+1], "-") {
+			i++
+		}
+	}
+	return append(slices.Clone(args[:start]), out...)
+}
+
+// stripShortCluster drops -c and -r from a short-flag token and parses it the way claude does: the
+// boolean letters c, p, v and h are read one by one, and the first other letter takes the rest of the
+// token as its value (-d takes an optional filter), so the rest stays untouched. -r also takes the rest
+// of the token as its value, which is dropped with it. cleaned is the token without the dropped letters
+// ("" when nothing remains); takesNext reports a trailing -r with no attached value, whose value may be
+// the next token.
+func stripShortCluster(a string) (cleaned string, takesNext bool) {
+	letters := a[1:]
+	var kept strings.Builder
+	for i := range len(letters) {
+		switch c := letters[i]; c {
+		case 'c':
+			// dropped
+		case 'r':
+			takesNext = i == len(letters)-1
+			return clusterToken(kept.String()), takesNext
+		case 'p', 'v', 'h':
+			kept.WriteByte(c)
+		default:
+			kept.WriteString(letters[i:])
+			return clusterToken(kept.String()), false
+		}
+	}
+	return clusterToken(kept.String()), false
+}
+
+// clusterToken turns the kept letters back into a short-flag token, "" when none remain.
+func clusterToken(letters string) string {
+	if letters == "" {
+		return ""
+	}
+	return "-" + letters
+}
+
 // sessionEnvVars are the per-session markers Claude Code sets on processes it spawns.
 // any one of them left in a child env makes the spawned claude behave as a nested session:
 // it attaches to the parent's session plumbing, never writes its own transcript, and a PTY
@@ -341,25 +423,27 @@ func (e *ClaudeExecutor) now() time.Time {
 
 // Run executes claude CLI with the given prompt and parses streaming JSON output.
 func (e *ClaudeExecutor) Run(ctx context.Context, prompt string) Result {
+	return e.RunSession(ctx, prompt, SessionSpec{})
+}
+
+// RunSession executes claude CLI like Run, inside the session named by spec. with an ID and no
+// Resume it starts a new session named ID (--session-id); with Resume it continues that session
+// (--resume). an empty spec leaves the argv unchanged. Result.SessionID carries spec.ID back.
+func (e *ClaudeExecutor) RunSession(ctx context.Context, prompt string, spec SessionSpec) Result {
+	result := e.runClaude(ctx, prompt, spec)
+	result.SessionID = spec.ID
+	return result
+}
+
+// runClaude builds the argv and runs one claude process.
+func (e *ClaudeExecutor) runClaude(ctx context.Context, prompt string, spec SessionSpec) Result {
 	cmd := e.Command
 	if cmd == "" {
 		cmd = "claude"
 	}
 
 	// build args from configured string or use defaults
-	var args []string
-	switch {
-	case e.ArgsSet:
-		args = splitArgs(e.Args)
-	case e.Args != "":
-		args = splitArgs(e.Args)
-	default:
-		args = []string{
-			"--dangerously-skip-permissions",
-			"--output-format", "stream-json",
-			"--verbose",
-		}
-	}
+	args := e.configuredArgs()
 	// inject --model flag if a model override is configured;
 	// strip any existing --model from args to avoid duplicate/conflicting flags
 	if e.Model != "" {
@@ -371,6 +455,18 @@ func (e *ClaudeExecutor) Run(ctx context.Context, prompt string) Result {
 	if e.Effort != "" {
 		args = stripFlag(args, "--effort")
 		args = append(args, "--effort", e.Effort)
+	}
+	// inject the session flag next to --model/--effort so it stays after any "--" separator a
+	// launcher such as agrouter uses; strip configured copies to avoid conflicting flags
+	if spec.ID != "" {
+		args = stripFlag(args, "--session-id")
+		args = stripFlag(args, "--resume")
+		args = stripSessionSelectors(args)
+		if spec.Resume {
+			args = append(args, "--resume", spec.ID)
+		} else {
+			args = append(args, "--session-id", spec.ID)
+		}
 	}
 	// always append --print to enable non-interactive mode; mirrors old -p flag that was
 	// always appended. wrapper scripts ignore unknown flags via '*) shift ;;' catch-all.
@@ -404,7 +500,7 @@ func (e *ClaudeExecutor) Run(ctx context.Context, prompt string) Result {
 		return Result{Error: err}
 	}
 
-	result := e.parseStream(execCtx, stdout, idleTouch)
+	result := e.parseStreamHiding(execCtx, stdout, idleTouch, spec.Resume)
 	waitErr := wait()
 
 	return e.resolveRunResult(result, claudeRunOutcome{
@@ -412,6 +508,63 @@ func (e *ClaudeExecutor) Run(ctx context.Context, prompt string) Result {
 		parentErr:    ctx.Err(),
 		idleTimedOut: e.IdleTimeout > 0 && execCtx.Err() != nil && ctx.Err() == nil,
 	})
+}
+
+// CanResume reports whether this executor can resume a claude session. it is true only for the
+// real claude CLI and for the agrouter launcher running claude (args start with "exec claude").
+// wrapper scripts such as codex-as-claude.sh never resume. a configured --no-session-persistence
+// disables resume, because the session is then never stored.
+func (e *ClaudeExecutor) CanResume() bool {
+	args := e.configuredArgs()
+	if slices.Contains(args, "--no-session-persistence") {
+		return false
+	}
+	switch commandBaseName(e.Command) {
+	case "", "claude":
+		return true
+	case "agrouter":
+		return len(args) >= 2 && args[0] == "exec" && args[1] == "claude"
+	default:
+		return false
+	}
+}
+
+// NewSessionID returns a new random UUID v4 for a claude session.
+func (e *ClaudeExecutor) NewSessionID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ""
+	}
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // RFC 4122 variant
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// configuredArgs returns the args the executor starts from, before model, effort, session
+// and --print injection.
+func (e *ClaudeExecutor) configuredArgs() []string {
+	if e.ArgsSet || e.Args != "" {
+		return splitArgs(e.Args)
+	}
+	return []string{
+		"--dangerously-skip-permissions",
+		"--output-format", "stream-json",
+		"--verbose",
+	}
+}
+
+// commandBaseName returns the lowercase base name of a command path without a .exe, .cmd or
+// .bat extension. it splits on both / and \ so a Windows path works on any host.
+func commandBaseName(command string) string {
+	name := command
+	if i := strings.LastIndexAny(name, `/\`); i >= 0 {
+		name = name[i+1:]
+	}
+	name = strings.ToLower(name)
+	for _, ext := range []string{".exe", ".cmd", ".bat"} {
+		name = strings.TrimSuffix(name, ext)
+	}
+	return name
 }
 
 // claudeRunOutcome records process state that is not available while parsing the
@@ -492,6 +645,13 @@ func (e *ClaudeExecutor) patternError(patternText, signal string) error {
 // checks ctx.Done() between reads so cancellation is not blocked by slow pipe reads.
 // idleTouch resets the idle timer on each line of output; pass no-op when idle timeout is disabled.
 func (e *ClaudeExecutor) parseStream(ctx context.Context, r io.Reader, idleTouch func()) Result {
+	return e.parseStreamHiding(ctx, r, idleTouch, false)
+}
+
+// parseStreamHiding is parseStream with an option for resume runs: when hideMissing is set, the
+// CLI's "No conversation found with session ID ..." line is kept for diagnostics but is not sent
+// to OutputHandler, so the silent fallback to a new session leaves no trace in the progress log.
+func (e *ClaudeExecutor) parseStreamHiding(ctx context.Context, r io.Reader, idleTouch func(), hideMissing bool) Result {
 	var output strings.Builder
 	var signal string
 	var recentText textWindow
@@ -510,11 +670,14 @@ func (e *ClaudeExecutor) parseStream(ctx context.Context, r io.Reader, idleTouch
 			if e.Debug {
 				log.Printf("[debug] non-JSON line: %s", line)
 			}
-			output.WriteString(line)
-			output.WriteString("\n")
-			recentText.add(line)
+			hidden := hideMissing && strings.Contains(strings.ToLower(line), "no conversation found")
+			if !hidden {
+				output.WriteString(line)
+				output.WriteString("\n")
+				recentText.add(line)
+			}
 			diagnostics.add(line)
-			if e.OutputHandler != nil {
+			if e.OutputHandler != nil && !hidden {
 				e.OutputHandler(line + "\n")
 			}
 			return

@@ -22,6 +22,11 @@ func NewGitState(deps *Deps, log Logger) *GitState {
 	return &GitState{deps: deps, log: log}
 }
 
+// hasGit reports whether a git checker is wired, so HEAD can be read at all.
+func (g *GitState) hasGit() bool {
+	return g != nil && g.deps != nil && g.deps.Git != nil
+}
+
 func (g *GitState) headHash() string {
 	if g == nil || g.deps == nil || g.deps.Git == nil {
 		return ""

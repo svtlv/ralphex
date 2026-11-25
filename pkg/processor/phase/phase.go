@@ -24,6 +24,7 @@ const (
 //go:generate moq -out mocks/plan_review_logger.go -pkg mocks -skip-ensure -fmt goimports . PlanReviewLogger
 //go:generate moq -out mocks/plan_review_prompts.go -pkg mocks -skip-ensure -fmt goimports . PlanReviewPrompts
 //go:generate moq -out mocks/plan_finder.go -pkg mocks -skip-ensure -fmt goimports . PlanFinder
+//go:generate moq -out mocks/session_executor.go -pkg mocks -skip-ensure -fmt goimports . SessionExecutor
 
 // retryBackoff is the pause before re-running an iteration that timed out or hit
 // a transient retry pattern, applied in the task and review retry loops.
@@ -67,6 +68,19 @@ func wrapExecutorError(policy Policy, err error, execName string) error {
 // Executor runs a phase prompt and returns the executor result.
 type Executor interface {
 	Run(ctx context.Context, prompt string) executor.Result
+}
+
+// SessionExecutor is an optional Executor capability: running a prompt inside a named session
+// so a retried review round can resume it. executors that do not implement it (mocks, wrapper
+// scripts) behave as plain Executors.
+type SessionExecutor interface {
+	Executor
+	// CanResume reports whether the configured command supports session resume.
+	CanResume() bool
+	// NewSessionID returns an id for a new session, or "" when the executor assigns its own id.
+	NewSessionID() string
+	// RunSession runs the prompt inside the session described by spec.
+	RunSession(ctx context.Context, prompt string, spec executor.SessionSpec) executor.Result
 }
 
 // Logger records plain phase progress messages.

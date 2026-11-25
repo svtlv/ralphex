@@ -15,8 +15,6 @@ The linked records contain the requirements and the `worth` decisions. This orde
    This depends on the external authentication decision.
 4. [Reject unknown pi thinking levels](pi-ignores-unknown-thinking-level.md).
    Check upstream behavior before you select a fix for this fork. This is separate from reporting the effective thinking level.
-5. [Resume a retried review round](claude-review-rounds-repeat-research.md).
-   Reuse the session only for a retry of the same round in the same process. Start a new session for a new round or a restart.
 
 ## Design decisions (`worth: maybe`, not rejected)
 

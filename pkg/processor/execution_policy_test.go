@@ -11,6 +11,8 @@ import (
 
 	"github.com/svtlv/ralphex/pkg/config"
 	"github.com/svtlv/ralphex/pkg/executor"
+	"github.com/svtlv/ralphex/pkg/processor/phase"
+	"github.com/svtlv/ralphex/pkg/processor/phase/mocks"
 	"github.com/svtlv/ralphex/pkg/status"
 )
 
@@ -309,6 +311,38 @@ func TestExecutionPolicy_SessionTimeoutBlockingExecutor(t *testing.T) {
 	assertLogContains(t, log, "session timed out")
 }
 
+func TestExecutionPolicy_SessionTimeoutFallbackVerdict(t *testing.T) {
+	tests := []struct {
+		name         string
+		fbTimedOut   bool
+		wantTimedOut bool
+		wantSignal   string
+	}{
+		{name: "fallback finished after the policy deadline inside its own timeout", fbTimedOut: false,
+			wantTimedOut: false, wantSignal: status.Completed},
+		{name: "fallback hit its own timeout", fbTimedOut: true, wantTimedOut: true, wantSignal: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := newMockLogger()
+			appCfg := testAppConfig(t)
+			appCfg.SessionTimeout = 20 * time.Millisecond
+			appCfg.SessionTimeoutSet = true
+			policy := newRetryPolicy(retryPolicyOpts{cfg: Config{AppConfig: appCfg}, log: log})
+
+			run := func(ctx context.Context, _ string) executor.Result {
+				<-ctx.Done() // the policy deadline passes while the fallback is still running
+				return executor.Result{Output: "done", Signal: status.Completed, Fallback: true, FallbackTimedOut: tt.fbTimedOut}
+			}
+
+			result := policy.runWithSessionTimeout(t.Context(), run, "prompt", "claude")
+
+			assert.Equal(t, tt.wantTimedOut, result.TimedOut)
+			assert.Equal(t, tt.wantSignal, result.Result.Signal)
+		})
+	}
+}
+
 func TestExecutionPolicy_SessionTimeoutZeroDoesNotAddDeadline(t *testing.T) {
 	log := newMockLogger()
 	appCfg := testAppConfig(t)
@@ -457,4 +491,49 @@ func TestExecutionPolicy_SessionTimeoutClearsSignalOnTimeout(t *testing.T) {
 	require.NoError(t, result.Result.Error)
 	assert.Empty(t, result.Result.Signal)
 	assert.True(t, result.TimedOut)
+}
+
+type reviewTestPrompts struct{}
+
+func (reviewTestPrompts) FirstReviewPrompt() string { return "first review prompt" }
+func (reviewTestPrompts) SecondReviewPrompt(prefix string) string {
+	return prefix + "second review prompt"
+}
+
+// a rate limit with --wait inside the real retry policy re-runs the round, and the second
+// attempt resumes the session of the first with the continue prompt instead of the full prompt.
+func TestExecutionPolicy_ReviewLimitWaitRetryResumesRoundSession(t *testing.T) {
+	type call struct {
+		prompt string
+		spec   executor.SessionSpec
+	}
+	var calls []call
+	sessions := &mocks.SessionExecutorMock{
+		CanResumeFunc:    func() bool { return true },
+		NewSessionIDFunc: func() string { return "round-id" },
+		RunSessionFunc: func(_ context.Context, prompt string, spec executor.SessionSpec) executor.Result {
+			calls = append(calls, call{prompt: prompt, spec: spec})
+			if len(calls) == 1 {
+				return executor.Result{Error: &executor.LimitPatternError{Pattern: "limit", HelpCmd: "usage"}}
+			}
+			return executor.Result{Output: "done", Signal: status.ReviewDone}
+		},
+	}
+	log := newMockLogger()
+	cfg := Config{AppConfig: testAppConfig(t)}
+	review := phase.NewReviewPhase(phase.ReviewPhaseOpts{
+		Cfg:     phase.Config{MaxIterations: 50, AppConfig: cfg.AppConfig},
+		Log:     log,
+		Exec:    sessions,
+		Policy:  newRetryPolicy(retryPolicyOpts{cfg: cfg, log: log, waitOnLimit: time.Millisecond}),
+		Prompts: reviewTestPrompts{},
+	})
+
+	require.NoError(t, review.First(t.Context()))
+
+	require.Len(t, calls, 2)
+	assert.Equal(t, "first review prompt", calls[0].prompt)
+	assert.Equal(t, executor.SessionSpec{ID: "round-id"}, calls[0].spec)
+	assert.NotEqual(t, "first review prompt", calls[1].prompt, "the retry sends the continue prompt")
+	assert.Equal(t, executor.SessionSpec{ID: "round-id", Resume: true}, calls[1].spec)
 }
