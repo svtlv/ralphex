@@ -7,25 +7,25 @@ cask "ralphex.windows" do
     end
   end
 
-  version "1.7.0-windows.4"
+  version "1.7.0-windows.5"
 
   on_macos do
     on_arm do
-      sha256 "bffeb75cbc322b2992fbe86a7f5a27f3367b61a973bfcc915018a4f8b1583e30"
+      sha256 "7f6a73a6736ac0dfb89eb459e9201e04e6ee8c850210acf1cbac6385de79b88e"
       url "https://github.com/svtlv/ralphex/releases/download/v#{version}/ralphex_#{version}_darwin_arm64.tar.gz"
     end
     on_intel do
-      sha256 "3e65e973861bef7d4ad051d407f9c756f34831e73d76ddbef60e1afe2517bace"
+      sha256 "25238536f8490044ac6ff86cff79ba9be61dc605b960a52534eed9c7ad48984f"
       url "https://github.com/svtlv/ralphex/releases/download/v#{version}/ralphex_#{version}_darwin_amd64.tar.gz"
     end
   end
   on_linux do
     on_arm do
-      sha256 "faec381e34ce87da0954401e4d33faeabc7993c7ae595e48d132b39796817a13"
+      sha256 "405684227bd17d3765fdd0c6aa0727f7cf09a28ff74d02e462ad3fae6a78dc1f"
       url "https://github.com/svtlv/ralphex/releases/download/v#{version}/ralphex_#{version}_linux_arm64.tar.gz"
     end
     on_intel do
-      sha256 "4caa26db92298ffd380bd84a9af56826dd62a500f7bc028e102c7b2ac3dbfacb"
+      sha256 "481e46168d294b99277f4e6937847475bae60fe8b4eda98fe1ad8bbe41ce78cd"
       url "https://github.com/svtlv/ralphex/releases/download/v#{version}/ralphex_#{version}_linux_amd64.tar.gz"
     end
   end
