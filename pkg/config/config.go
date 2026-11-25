@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/umputun/ralphex/pkg/notify"
+	"github.com/svtlv/ralphex/pkg/notify"
 )
 
 //go:embed defaults/config defaults/prompts/* defaults/agents/*
@@ -25,6 +25,7 @@ const (
 	customReviewPromptFile = "custom_review.txt"
 	customEvalPromptFile   = "custom_eval.txt"
 	codexReviewPromptFile  = "codex_review.txt"
+	planReviewPromptFile   = "plan_review.txt"
 )
 
 // Executor mode constants for the Config.Executor field.
@@ -126,6 +127,7 @@ type Config struct {
 	CustomReviewPrompt string `json:"-"`
 	CustomEvalPrompt   string `json:"-"`
 	CodexReviewPrompt  string `json:"-"`
+	PlanReviewPrompt   string `json:"-"`
 
 	// custom agents (loaded separately from files)
 	CustomAgents []CustomAgent `json:"-"`
@@ -365,6 +367,7 @@ func loadConfigFromDirs(globalDir, localDir string) (*Config, error) {
 		CustomReviewPrompt: prompts.CustomReview,
 		CustomEvalPrompt:   prompts.CustomEval,
 		CodexReviewPrompt:  prompts.CodexReview,
+		PlanReviewPrompt:   prompts.PlanReview,
 		CustomAgents:       agents,
 		configDir:          globalDir,
 		localDir:           localDir,

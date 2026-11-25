@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tmaxmax/go-sse"
 
-	"github.com/umputun/ralphex/pkg/status"
+	"github.com/svtlv/ralphex/pkg/status"
 )
 
 func TestNewSession(t *testing.T) {

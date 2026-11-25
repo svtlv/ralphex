@@ -12,10 +12,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/umputun/ralphex/pkg/config"
-	"github.com/umputun/ralphex/pkg/executor"
-	"github.com/umputun/ralphex/pkg/processor/mocks"
-	"github.com/umputun/ralphex/pkg/status"
+	"github.com/svtlv/ralphex/pkg/config"
+	"github.com/svtlv/ralphex/pkg/executor"
+	"github.com/svtlv/ralphex/pkg/processor/mocks"
+	"github.com/svtlv/ralphex/pkg/status"
 )
 
 func TestRunner_TaskRetryCountUsesConfig(t *testing.T) {
@@ -614,4 +614,45 @@ func TestRunner_WaitOnLimit_ZeroReturnsLimitError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "pattern handling")
 	assert.Len(t, task.RunCalls(), 1)
+}
+
+func TestExecutorFactory_Build_PlanModesWireReviewExecutors(t *testing.T) {
+	log := newRunnerMockLogger("progress.txt")
+
+	codexPath := filepath.Join(t.TempDir(), "agrouter-codex")
+	require.NoError(t, os.WriteFile(codexPath, []byte("#!/bin/sh\n"), 0o700)) //nolint:gosec // test stub must be executable
+	scriptPath := filepath.Join(t.TempDir(), "review.sh")
+
+	for _, mode := range []Mode{ModePlan, ModePlanReview} {
+		t.Run(string(mode)+" wires external codex_command and custom script", func(t *testing.T) {
+			appCfg := testAppConfig(t)
+			appCfg.Executor = config.ExecutorClaude
+			appCfg.CodexCommand = codexPath
+			appCfg.CustomReviewScript = scriptPath
+			cfg := Config{Mode: mode, MaxIterations: 5, CodexEnabled: true, AppConfig: appCfg}
+
+			_, execs := (&executorFactory{}).Build(cfg, log)
+
+			external, ok := execs.External.(*executor.CodexExecutor)
+			require.True(t, ok, "external executor should be *executor.CodexExecutor")
+			assert.Equal(t, codexPath, external.Command)
+			require.NotNil(t, execs.Custom)
+			assert.Equal(t, scriptPath, execs.Custom.Script)
+		})
+
+		t.Run(string(mode)+" under codex executor leaves external unset", func(t *testing.T) {
+			appCfg := testAppConfig(t)
+			appCfg.Executor = config.ExecutorCodex
+			appCfg.CustomReviewScript = scriptPath
+			cfg := Config{Mode: mode, MaxIterations: 5, AppConfig: appCfg}
+
+			_, execs := (&executorFactory{}).Build(cfg, log)
+
+			assert.Nil(t, execs.External)
+			_, ok := execs.Task.(*executor.CodexExecutor)
+			assert.True(t, ok, "task executor should be codex under --codex")
+			require.NotNil(t, execs.Custom)
+			assert.Equal(t, scriptPath, execs.Custom.Script)
+		})
+	}
 }

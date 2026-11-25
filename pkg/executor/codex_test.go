@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -578,8 +579,8 @@ func TestExecCodexRunner_Run(t *testing.T) {
 	// test the real runner with a simple command
 	runner := &execCodexRunner{}
 
-	// use echo which writes to stdout
-	streams, wait, err := runner.Run(context.Background(), "echo", "hello")
+	// use a script that writes to stdout
+	streams, wait, err := runner.Run(context.Background(), echoScript(t, "hello"))
 
 	require.NoError(t, err)
 	require.NotNil(t, streams.Stdout)
@@ -600,16 +601,20 @@ func TestExecCodexRunner_Run_Stdin(t *testing.T) {
 	// test that stdin is piped to the child process (prompt via stdin for Windows compat)
 	prompt := "hello from stdin"
 	runner := &execCodexRunner{stdin: strings.NewReader(prompt)}
+	cmd := "cat"
+	if runtime.GOOS == "windows" {
+		cmd = "more"
+	}
 
 	// use cat which reads stdin and writes to stdout
-	streams, wait, err := runner.Run(context.Background(), "cat")
+	streams, wait, err := runner.Run(context.Background(), cmd)
 
 	require.NoError(t, err)
 	require.NotNil(t, streams.Stdout)
 
 	data, readErr := io.ReadAll(streams.Stdout)
 	require.NoError(t, readErr)
-	assert.Equal(t, prompt, string(data))
+	assert.Contains(t, string(data), prompt)
 
 	err = wait()
 	require.NoError(t, err)
@@ -1782,6 +1787,10 @@ func TestCodexExecutor_extractSessionID(t *testing.T) {
 		{name: "no match", line: "[26-05-18 10:40:06] model: gpt-5.5", want: ""},
 		{name: "malformed uuid", line: "session id: not-a-uuid", want: ""},
 		{name: "empty", line: "", want: ""},
+		{name: "workdir path that contains the field", line: "[26-05-18 10:40:06] workdir: /tmp/session id: 019e3bbe-9788-79f1-b668-6c5790788775", want: ""},
+		{name: "bare workdir path that contains the field", line: "workdir: /tmp/x session id: 019e3bbe-9788-79f1-b668-6c5790788775", want: ""},
+		{name: "text after the id", line: "session id: 019e3bbe-9788-79f1-b668-6c5790788775 extra", want: ""},
+		{name: "trailing space", line: "session id: 019e3bbe-9788-79f1-b668-6c5790788775 ", want: "019e3bbe-9788-79f1-b668-6c5790788775"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1859,6 +1868,7 @@ func TestCodexExecutor_tailRolloutFile_streamsAssistantMessages(t *testing.T) {
 	// can resolve it via the same glob the real runtime uses.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	sessionID := "019e3bbe-9788-79f1-b668-deadbeefcafe"
 	dir := filepath.Join(home, ".codex", "sessions", "2026", "05", "18")
 	require.NoError(t, os.MkdirAll(dir, 0o750))
@@ -1901,7 +1911,7 @@ func TestCodexExecutor_tailRolloutFile_streamsAssistantMessages(t *testing.T) {
 	tailDone := make(chan struct{})
 	go func() {
 		defer close(tailDone)
-		e.tailRolloutFile(ctx, sessionID, nil)
+		e.tailRolloutFile(ctx, sessionID, 0, nil)
 	}()
 
 	// wait briefly for initial drain (assistant text + reasoning title)
@@ -1933,6 +1943,7 @@ func TestCodexExecutor_tailRolloutFile_streamsAssistantMessages(t *testing.T) {
 func TestCodexExecutor_findRolloutFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	e := &CodexExecutor{}
 
 	t.Run("returns empty when no file", func(t *testing.T) {
@@ -2031,4 +2042,395 @@ func TestCodexExecutor_firstRunHeaderEmission(t *testing.T) {
 		// second run emits nothing to stderr display (reasoning comes from the rollout).
 		assert.Empty(t, secondCaptured, "second run has nothing to forward from stderr")
 	})
+}
+
+const resumeTestSessionID = "019e3bbe-9788-79f1-b668-abcdefabcdef"
+
+// codexBanner returns a stderr header block that carries resumeTestSessionID.
+func codexBanner() string {
+	return "--------\nmodel: gpt-5.5\nsession id: " + resumeTestSessionID + "\n--------\n"
+}
+
+func TestCodexExecutor_RunSession_args(t *testing.T) {
+	t.Setenv("RALPHEX_DOCKER", "")
+
+	tests := []struct {
+		name       string
+		spec       SessionSpec
+		wantSuffix []string
+		wantNoWord bool // true when "resume" must not appear in argv
+	}{
+		{name: "empty spec is a fresh run", spec: SessionSpec{}, wantNoWord: true},
+		{name: "id without resume is a fresh run", spec: SessionSpec{ID: resumeTestSessionID}, wantNoWord: true},
+		{name: "resume without id is a fresh run", spec: SessionSpec{Resume: true}, wantNoWord: true},
+		{
+			name:       "resume with id appends resume subcommand",
+			spec:       SessionSpec{ID: resumeTestSessionID, Resume: true},
+			wantSuffix: []string{"resume", resumeTestSessionID, "-"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var capturedArgs []string
+			mock := &mockCodexRunner{
+				runFunc: func(_ context.Context, _ string, args ...string) (CodexStreams, func() error, error) {
+					capturedArgs = args
+					return mockStreams("", "ok"), mockWait(), nil
+				},
+			}
+			e := &CodexExecutor{runner: mock, Model: "gpt-5.5", ReasoningEffort: "high", MultiAgent: true, Sandbox: "danger-full-access"}
+			result := e.RunSession(context.Background(), "continue", tc.spec)
+			require.NoError(t, result.Error)
+
+			assert.Equal(t, "exec", capturedArgs[0])
+			joined := strings.Join(capturedArgs, " ")
+			for _, want := range []string{"--dangerously-bypass-approvals-and-sandbox", "--sandbox danger-full-access", `-c model="gpt-5.5"`, "-c model_reasoning_effort=high", "stream_idle_timeout_ms=3600000"} {
+				assert.Contains(t, joined, want, "flags stay the same as a fresh run")
+			}
+			if tc.wantNoWord {
+				assert.NotContains(t, capturedArgs, "resume")
+				return
+			}
+			assert.Equal(t, tc.wantSuffix, capturedArgs[len(capturedArgs)-len(tc.wantSuffix):], "resume <id> - ends the argv")
+			assert.NotContains(t, capturedArgs, "continue", "prompt goes through stdin, not argv")
+		})
+	}
+}
+
+func TestCodexExecutor_RunSession_sessionID(t *testing.T) {
+	tests := []struct {
+		name   string
+		spec   SessionSpec
+		stderr string
+		wait   error
+		idle   time.Duration
+		want   string
+	}{
+		{name: "success reads banner id", stderr: codexBanner(), want: resumeTestSessionID},
+		{name: "error path keeps banner id", stderr: codexBanner(), wait: errors.New("exit status 1"), want: resumeTestSessionID},
+		{name: "no banner and fresh run gives empty id", stderr: "", want: ""},
+		{
+			name:   "resume without banner falls back to spec id",
+			spec:   SessionSpec{ID: resumeTestSessionID, Resume: true},
+			stderr: "",
+			want:   resumeTestSessionID,
+		},
+		{
+			name:   "fresh run ignores spec id",
+			spec:   SessionSpec{ID: "11111111-1111-4111-8111-111111111111"},
+			stderr: codexBanner(),
+			want:   resumeTestSessionID,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockCodexRunner{
+				runFunc: func(_ context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
+					return mockStreams(tc.stderr, "out"), mockWaitError(tc.wait), nil
+				},
+			}
+			e := &CodexExecutor{runner: mock}
+			result := e.RunSession(context.Background(), "p", tc.spec)
+			assert.Equal(t, tc.want, result.SessionID)
+			if tc.wait != nil {
+				require.Error(t, result.Error)
+			}
+		})
+	}
+}
+
+// codex prints the workdir unescaped, so a directory name with a line break can forge a
+// "session id:" line ahead of the real one. the banner id is then not trusted: a fresh run reports
+// no id (the round starts a new session), and a resume keeps the id it asked for.
+func TestCodexExecutor_RunSession_workdirWithLineBreak(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows file names cannot contain a line break")
+	}
+	forged := "11111111-1111-4111-8111-111111111111"
+	dir := filepath.Join(t.TempDir(), "evil\nsession id: "+forged)
+	require.NoError(t, os.Mkdir(dir, 0o700))
+	t.Chdir(dir)
+
+	banner := "workdir: " + dir + "\nmodel: gpt\nsession id: " + resumeTestSessionID + "\n"
+	tests := []struct {
+		name string
+		spec SessionSpec
+		want string
+	}{
+		{name: "fresh run keeps no id", want: ""},
+		{name: "resume keeps its own id", spec: SessionSpec{ID: resumeTestSessionID, Resume: true}, want: resumeTestSessionID},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockCodexRunner{
+				runFunc: func(_ context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
+					return mockStreams(banner, "out"), mockWaitError(nil), nil
+				},
+			}
+			e := &CodexExecutor{runner: mock}
+			result := e.RunSession(context.Background(), "p", tc.spec)
+			assert.Equal(t, tc.want, result.SessionID)
+		})
+	}
+}
+
+func TestWorkdirHasLineBreak(t *testing.T) {
+	t.Run("plain directory", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		assert.False(t, workdirHasLineBreak())
+	})
+
+	t.Run("logical path is clean but physical path has a line break", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("windows file names cannot contain a line break")
+		}
+		root := t.TempDir()
+		physical := filepath.Join(root, "evil") + "\nsession id: 11111111-1111-4111-8111-111111111111"
+		require.NoError(t, os.Mkdir(physical, 0o700))
+		link := filepath.Join(root, "link")
+		require.NoError(t, os.Symlink(physical, link))
+		t.Chdir(link) // sets PWD to the link, so os.Getwd returns the logical path
+
+		wd, err := os.Getwd()
+		require.NoError(t, err)
+		require.NotContains(t, wd, "\n", "precondition: Getwd must return the logical path")
+		assert.True(t, workdirHasLineBreak())
+	})
+}
+
+// an untrusted banner must not reach the rollout tailer either: the tailer would copy another
+// session's text into the progress log.
+func TestCodexExecutor_processStderr_untrustedBannerSendsNoID(t *testing.T) {
+	tests := []struct {
+		name      string
+		untrusted bool
+		wantID    string
+	}{
+		{name: "trusted banner", wantID: resumeTestSessionID},
+		{name: "untrusted banner", untrusted: true, wantID: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &CodexExecutor{}
+			ch := make(chan string, 1)
+			res := e.processStderr(context.Background(), strings.NewReader(codexBanner()),
+				stderrStreamOpts{sessionIDCh: ch, untrustedBanner: tc.untrusted})
+			assert.Equal(t, tc.wantID, res.sessionID)
+			select {
+			case id := <-ch:
+				assert.Equal(t, tc.wantID, id)
+			default:
+				assert.Empty(t, tc.wantID, "no id must be sent for an untrusted banner")
+			}
+		})
+	}
+}
+
+// a failed codex resume of an unknown thread must surface the missing-session text in the error,
+// because the review round fallback matches on it. the error pattern list must not swallow it.
+func TestCodexExecutor_RunSession_MissingSessionReachesError(t *testing.T) {
+	mock := &mockCodexRunner{
+		runFunc: func(_ context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
+			return mockStreams("ERROR: no rollout found for thread id "+resumeTestSessionID+"\n", ""),
+				mockWaitError(errors.New("exit status 1")), nil
+		},
+	}
+	e := &CodexExecutor{runner: mock, ErrorPatterns: []string{"Rate limit"}}
+
+	result := e.RunSession(context.Background(), "p", SessionSpec{ID: resumeTestSessionID, Resume: true})
+
+	require.Error(t, result.Error)
+	var patternErr *PatternMatchError
+	assert.NotErrorAs(t, result.Error, &patternErr)
+	assert.Contains(t, strings.ToLower(result.Error.Error()), "no rollout found for thread id")
+}
+
+// only a CLI error line reports a missing session in DiagnosticText. model text on stderr that
+// quotes the message (ralphex reviewing its own source) must not, even when it reaches the error tail.
+func TestCodexExecutor_RunSession_MissingSessionDiagnosticText(t *testing.T) {
+	tests := []struct {
+		name   string
+		stderr string
+		want   string
+	}{
+		{name: "cli error line", stderr: "ERROR: no rollout found for thread id " + resumeTestSessionID + "\n",
+			want: "ERROR: no rollout found for thread id " + resumeTestSessionID},
+		{name: "echoed tool output with another id", stderr: "ERROR: no rollout found for thread id abc\n", want: ""},
+		{name: "echoed tool output without an id", stderr: "ERROR: no rollout found for thread id\n", want: ""},
+		{name: "model text quotes the message", stderr: "the code matches no rollout found for thread id\n", want: ""},
+		{name: "quoted in a source code line", stderr: "const m = \"no rollout found for thread id\"\n", want: ""},
+		{name: "unrelated error", stderr: "ERROR: boom\n", want: ""},
+		{name: "command output echoed after the session banner",
+			stderr: codexBanner() + "ERROR: no rollout found for thread id " + resumeTestSessionID + "\n", want: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockCodexRunner{
+				runFunc: func(_ context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
+					return mockStreams(tc.stderr, ""), mockWaitError(errors.New("exit status 1")), nil
+				},
+			}
+			e := &CodexExecutor{runner: mock}
+			result := e.RunSession(context.Background(), "p", SessionSpec{ID: resumeTestSessionID, Resume: true})
+			require.Error(t, result.Error)
+			assert.Equal(t, tc.want, result.DiagnosticText)
+		})
+	}
+}
+
+func TestCodexExecutor_RunSession_sessionIDOnIdleTimeout(t *testing.T) {
+	stderrR, stderrW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	mock := &mockCodexRunner{
+		runFunc: func(ctx context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
+			go func() {
+				defer stderrW.Close()
+				defer stdoutW.Close()
+				_, _ = stderrW.Write([]byte(codexBanner()))
+				<-ctx.Done()
+			}()
+			return CodexStreams{Stderr: stderrR, Stdout: stdoutR}, func() error {
+				<-ctx.Done()
+				return errors.New("signal: killed")
+			}, nil
+		},
+	}
+	e := &CodexExecutor{runner: mock, IdleTimeout: 100 * time.Millisecond}
+	result := e.RunSession(context.Background(), "p", SessionSpec{})
+	require.NoError(t, result.Error)
+	assert.True(t, result.IdleTimedOut)
+	assert.Equal(t, resumeTestSessionID, result.SessionID, "idle-timeout return keeps the session id")
+}
+
+func TestCodexExecutor_RunSession_startErrorKeepsResumeID(t *testing.T) {
+	mock := &mockCodexRunner{
+		runFunc: func(_ context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
+			return CodexStreams{}, nil, errors.New("not found")
+		},
+	}
+	e := &CodexExecutor{runner: mock}
+	result := e.RunSession(context.Background(), "p", SessionSpec{ID: resumeTestSessionID, Resume: true})
+	require.Error(t, result.Error)
+	assert.Equal(t, resumeTestSessionID, result.SessionID)
+
+	fresh := e.RunSession(context.Background(), "p", SessionSpec{})
+	assert.Empty(t, fresh.SessionID)
+}
+
+func TestCodexExecutor_CanResume(t *testing.T) {
+	tests := []struct {
+		command string
+		want    bool
+	}{
+		{command: "", want: true},
+		{command: "codex", want: true},
+		{command: "/usr/local/bin/codex", want: true},
+		{command: `C:\Users\me\.codex\bin\codex.exe`, want: true},
+		{command: "CODEX.EXE", want: true},
+		{command: ".ralphex/scripts/codex-agrouter.sh", want: false},
+		{command: "scripts/codex-as-claude/codex-as-claude.sh", want: false},
+		{command: "agrouter", want: false},
+		{command: "my-codex", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.command, func(t *testing.T) {
+			e := &CodexExecutor{Command: tc.command}
+			assert.Equal(t, tc.want, e.CanResume())
+		})
+	}
+}
+
+func TestCodexExecutor_NewSessionID(t *testing.T) {
+	assert.Empty(t, (&CodexExecutor{}).NewSessionID(), "codex assigns its own session id")
+}
+
+func TestCodexExecutor_rolloutSize(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	e := &CodexExecutor{}
+
+	assert.Zero(t, e.rolloutSize(resumeTestSessionID), "missing file starts at zero")
+
+	dir := filepath.Join(home, ".codex", "sessions", "2026", "05", "18")
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	path := filepath.Join(dir, "rollout-2026-05-18T10-40-06-"+resumeTestSessionID+".jsonl")
+	require.NoError(t, os.WriteFile(path, []byte("12345"), 0o600))
+	assert.Equal(t, int64(5), e.rolloutSize(resumeTestSessionID))
+}
+
+func TestCodexExecutor_RunSession_resumeTailsOnlyNewRecords(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("RALPHEX_DOCKER", "")
+
+	dir := filepath.Join(home, ".codex", "sessions", "2026", "05", "18")
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	path := filepath.Join(dir, "rollout-2026-05-18T10-40-06-"+resumeTestSessionID+".jsonl")
+	record := func(text string) string {
+		return `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"` + text + `"}]}}` + "\n"
+	}
+	require.NoError(t, os.WriteFile(path, []byte(record("old research")), 0o600))
+
+	var (
+		mu       sync.Mutex
+		captured []string
+	)
+	mock := &mockCodexRunner{
+		runFunc: func(_ context.Context, _ string, _ ...string) (CodexStreams, func() error, error) {
+			// the resumed process appends its new records to the same rollout file
+			f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // test temp file
+			require.NoError(t, err)
+			_, err = f.WriteString(record("new work"))
+			require.NoError(t, err)
+			require.NoError(t, f.Close())
+			return mockStreams(codexBanner(), "done"), mockWait(), nil
+		},
+	}
+	e := &CodexExecutor{runner: mock, OutputHandler: func(text string) {
+		mu.Lock()
+		defer mu.Unlock()
+		captured = append(captured, text)
+	}}
+
+	result := e.RunSession(context.Background(), "continue", SessionSpec{ID: resumeTestSessionID, Resume: true})
+	require.NoError(t, result.Error)
+
+	mu.Lock()
+	defer mu.Unlock()
+	joined := strings.Join(captured, "\n")
+	assert.Contains(t, joined, "new work")
+	assert.NotContains(t, joined, "old research", "records before the resume offset must not replay")
+}
+
+func TestCodexExecutor_tailRolloutFile_offset(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := filepath.Join(home, ".codex", "sessions", "2026", "05", "18")
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	path := filepath.Join(dir, "rollout-2026-05-18T10-40-06-"+resumeTestSessionID+".jsonl")
+	first := `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first"}]}}` + "\n"
+	second := `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"second"}]}}` + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(first+second), 0o600))
+
+	tests := []struct {
+		name   string
+		offset int64
+		want   []string
+	}{
+		{name: "zero offset replays everything", offset: 0, want: []string{"first", "second"}},
+		{name: "offset skips earlier records", offset: int64(len(first)), want: []string{"second"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			e := &CodexExecutor{OutputHandler: func(text string) { got = append(got, text) }}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel() // canceled up front: the tailer still does its final drain
+			e.tailRolloutFile(ctx, resumeTestSessionID, tc.offset, nil)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }

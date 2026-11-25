@@ -23,6 +23,8 @@ func setupExternalTestRepo(t *testing.T) string {
 	runGit(t, dir, "config", "user.email", "test@test.com")
 	runGit(t, dir, "config", "user.name", "test")
 	runGit(t, dir, "config", "commit.gpgsign", "false")
+	// pin line endings so a developer's global core.autocrlf cannot rewrite fixture content
+	runGit(t, dir, "config", "core.autocrlf", "false")
 
 	// create a file and commit
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Test\n"), 0o600))
@@ -81,6 +83,43 @@ func TestExternalBackend_Root(t *testing.T) {
 	eb, err := newExternalBackend(dir, "git")
 	require.NoError(t, err)
 	assert.NotEmpty(t, eb.root())
+}
+
+func TestExternalBackend_statusPorcelainZ(t *testing.T) {
+	t.Run("clean repo returns empty output", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+
+		out, err := eb.statusPorcelainZ()
+		require.NoError(t, err)
+		assert.Empty(t, out)
+	})
+
+	t.Run("lists individual files in untracked directory with exact paths", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		eb, err := newExternalBackend(dir, "git")
+		require.NoError(t, err)
+
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "newdir"), 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "newdir", "a b.txt"), []byte("x"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "newdir", "c.txt"), []byte("y"), 0o600))
+
+		out, err := eb.statusPorcelainZ()
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{"?? newdir/a b.txt", "?? newdir/c.txt"}, strings.Split(strings.TrimRight(out, "\x00"), "\x00"))
+	})
+
+	t.Run("service exposes the same output", func(t *testing.T) {
+		dir := setupExternalTestRepo(t)
+		svc, err := NewService(dir, noopServiceLogger())
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0o600))
+
+		out, err := svc.StatusPorcelain()
+		require.NoError(t, err)
+		assert.Contains(t, out, "?? f.txt")
+	})
 }
 
 func TestExternalBackend_headHash(t *testing.T) {
@@ -736,6 +775,8 @@ func TestExternalBackend_CreateInitialCommit(t *testing.T) {
 		runGit(t, dir, "config", "user.email", "test@test.com")
 		runGit(t, dir, "config", "user.name", "test")
 		runGit(t, dir, "config", "commit.gpgsign", "false")
+		// pin line endings so a developer's global core.autocrlf cannot rewrite fixture content
+		runGit(t, dir, "config", "core.autocrlf", "false")
 
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Test\n"), 0o600))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o600))
@@ -757,6 +798,8 @@ func TestExternalBackend_CreateInitialCommit(t *testing.T) {
 		runGit(t, dir, "config", "user.email", "test@test.com")
 		runGit(t, dir, "config", "user.name", "test")
 		runGit(t, dir, "config", "commit.gpgsign", "false")
+		// pin line endings so a developer's global core.autocrlf cannot rewrite fixture content
+		runGit(t, dir, "config", "core.autocrlf", "false")
 
 		eb, err := newExternalBackend(dir, "git")
 		require.NoError(t, err)
@@ -772,6 +815,8 @@ func TestExternalBackend_CreateInitialCommit(t *testing.T) {
 		runGit(t, dir, "config", "user.email", "test@test.com")
 		runGit(t, dir, "config", "user.name", "test")
 		runGit(t, dir, "config", "commit.gpgsign", "false")
+		// pin line endings so a developer's global core.autocrlf cannot rewrite fixture content
+		runGit(t, dir, "config", "core.autocrlf", "false")
 
 		require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.log\n"), 0o600))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Test\n"), 0o600))
@@ -876,7 +921,7 @@ func TestExternalBackend_toRelative(t *testing.T) {
 	t.Run("returns repo-relative path unchanged", func(t *testing.T) {
 		rel, err := eb.toRelative("docs/plans/test.md")
 		require.NoError(t, err)
-		assert.Equal(t, "docs/plans/test.md", rel)
+		assert.Equal(t, "docs/plans/test.md", rel, "an already-relative slash path passes through untouched")
 	})
 
 	t.Run("converts os-specific separators to forward slashes", func(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/umputun/ralphex/pkg/plan"
+	"github.com/svtlv/ralphex/pkg/plan"
 )
 
 func TestParsePlan(t *testing.T) {
@@ -687,4 +687,72 @@ func TestTaskStatus_Constants(t *testing.T) {
 	assert.Equal(t, plan.TaskStatusActive, plan.TaskStatus("active"))
 	assert.Equal(t, plan.TaskStatusDone, plan.TaskStatus("done"))
 	assert.Equal(t, plan.TaskStatusFailed, plan.TaskStatus("failed"))
+}
+
+func TestExtractOverview(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "overview section with following section",
+			content: "# Title\n\n## Overview\nFirst line.\nSecond line.\n\n## Context\nother\n",
+			want:    "First line.\nSecond line.",
+		},
+		{
+			name:    "overview keeps sub-headings",
+			content: "# Title\n\n## Overview\nIntro\n### Detail\nmore\n\n## Context\nother\n",
+			want:    "Intro\n### Detail\nmore",
+		},
+		{
+			name:    "overview is last section",
+			content: "# Title\n\n## Overview\nonly text\n",
+			want:    "only text",
+		},
+		{
+			name:    "single hash plan",
+			content: "# Title\n\n# Overview\nsingle hash text\n## sub\nsub text\n\n# Context\nother\n",
+			want:    "single hash text\n## sub\nsub text",
+		},
+		{
+			name:    "case insensitive heading and crlf",
+			content: "# Title\r\n\r\n## OVERVIEW\r\nwindows text\r\n\r\n## Context\r\n",
+			want:    "windows text",
+		},
+		{
+			name:    "heading inside code fence is ignored",
+			content: "# Title\n\n## Overview\nbefore\n```\n## Context\n```\nafter\n\n## Context\nother\n",
+			want:    "before\n```\n## Context\n```\nafter",
+		},
+		{
+			name:    "missing overview falls back to first heading",
+			content: "# My Plan Title\n\n## Context\nother\n",
+			want:    "My Plan Title",
+		},
+		{
+			name:    "no headings",
+			content: "just text\n",
+			want:    "",
+		},
+		{
+			name:    "empty overview section",
+			content: "# Title\n\n## Overview\n\n## Context\n",
+			want:    "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "plan.md")
+			require.NoError(t, os.WriteFile(path, []byte(tc.content), 0o600))
+			got, err := plan.ExtractOverview(path)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+
+	t.Run("returns error for missing file", func(t *testing.T) {
+		_, err := plan.ExtractOverview(filepath.Join(t.TempDir(), "missing.md"))
+		require.Error(t, err)
+	})
 }

@@ -94,6 +94,8 @@ ralphex --claude-command=/path/to/wrapper.sh --external-review-tool=custom --cus
 
 `--external-review-tool` accepts `codex`, `custom`, or `none`. When `custom` is selected, `--custom-review-script` points at the script that receives the external review prompt file path.
 
+The same script also serves as External reviewer in plan review (`--plan`, `--plan-review`). For plan review the script must print its findings on stdout, one per line as `CRITICAL|MAJOR|MINOR: <section> - <text>`, or `NO ISSUES FOUND`. ralphex reads stdout only and keeps only lines that match this format.
+
 ## Codex wrapper (included compatibility example)
 
 **Compatibility path.** The wrapper at `scripts/codex-as-claude/codex-as-claude.sh` is kept for backwards compatibility — existing setups continue to work, but the wrapper carries overhead (JSONL-to-stream-json translation via `jq`) and uses Claude-flavored review prompts in front of a codex model. The first-class path avoids both.
@@ -594,7 +596,7 @@ echo '{"type":"result","result":""}'
 - Test with: `echo "test" | your-wrapper | jq .` (each line should parse)
 
 **Timeout / stuck:**
-- ralphex supports an optional per-session timeout via `--session-timeout` flag or `session_timeout` config option (e.g., `30m`, `1h`). In default Claude executor mode it applies to Claude calls only; under `--codex` it applies to every executor call. External codex/custom review in Claude mode is not affected.
+- ralphex supports an optional per-session timeout via `--session-timeout` flag or `session_timeout` config option (e.g., `30m`, `1h`). In default Claude executor mode it applies to Claude calls only; under `--codex` it applies to every executor call. External codex/custom review in Claude mode is not affected. Review-round retries resume the round session only for the real `claude` and `codex` CLIs (and `agrouter` running `exec claude`); `*-as-claude` wrappers never resume, so a retried round starts a new session with the full prompt.
 - ralphex also supports `--idle-timeout` flag or `idle_timeout` config option (e.g., `5m`). Unlike session timeout (fixed wall-clock limit), idle timeout resets on each output line and fires only when the session goes silent. It applies to the Claude executor in default mode and to every executor call under `--codex`; external codex review in default-claude mode is not affected. Custom review is not affected.
 - Check if the underlying tool has its own timeout settings
 - For codex: adjust `CODEX_SANDBOX` if the sandbox is blocking operations
